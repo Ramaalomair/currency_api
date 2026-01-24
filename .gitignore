@@ -1,0 +1,17 @@
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.dylib
+*.egg
+*.egg-info/
+models/
+firebase-credentials.json
+.DS_Store
+*.log
+.vscode/
+.idea/
