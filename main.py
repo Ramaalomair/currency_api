@@ -8,8 +8,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from datetime import datetime
-import os
-import gdown
+import osn
 from pathlib import Path
 import asyncio
 
