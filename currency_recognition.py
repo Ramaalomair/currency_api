@@ -9,10 +9,10 @@ import sys
 
 # متغيرات عامة
 MODEL = None
-MODEL_PATH = "SVM_.RBF.pkl"
+MODEL_PATH = "SVM_(RBF).pkl"
 
 # رابط GitHub Release
-MODEL_URL = "https://github.com/Ramaalomair/currency_api/releases/download/v1.0.0/SVM_.RBF.pkl"
+MODEL_URL = "https://github.com/Ramaalomair/currency_api/releases/download/v1.0.0/SVM_(RBF).pkl"
 
 def initialize_currency_recognition():
     """تحميل موديل SVM مرة واحدة"""
