@@ -2,20 +2,19 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip cache purge
 
-COPY main.py .
-COPY currency_recognition.py .
+COPY main.py currency_recognition.py ./
 
 RUN mkdir -p models/currency
-
-RUN gdown --id 1NUlvBjgPkej4WdNFL0WJFY43yTPz1M4n -O models/currency/SVM_\(RBF\).pkl
 
 EXPOSE 8000
 
