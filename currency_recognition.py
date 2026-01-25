@@ -12,7 +12,7 @@ MODEL = None
 MODEL_PATH = "SVM_(RBF).pkl"
 
 # رابط GitHub Release
-MODEL_URL = "https://github.com/Ramaalomair/currency_api/raw/main/models/currency/SVM_%28RBF%29.pkl"
+MODEL_URL = "https://github.com/Ramaalomair/currency_api/raw/main/models/currency/SVM_(RBF).pkl"
 
 def initialize_currency_recognition():
     """تحميل موديل SVM مرة واحدة"""
