@@ -18,6 +18,9 @@ from currency_recognition import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# طباعة PORT للتأكد
+logger.info(f"🔌 PORT from environment: {os.environ.get('PORT', 'Not set, using default 8000')}")
+
 # تحميل الموديل من Google Drive عند أول تشغيل
 MODEL_DIR = Path("models/currency")
 MODEL_PATH = MODEL_DIR / "SVM_(RBF).pkl"
