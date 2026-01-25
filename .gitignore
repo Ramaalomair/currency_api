@@ -9,7 +9,6 @@ __pycache__/
 *.dylib
 *.egg
 *.egg-info/
-models/
 firebase-credentials.json
 .DS_Store
 *.log
