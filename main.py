@@ -1,3 +1,8 @@
+import sys
+print("=" * 60, file=sys.stderr)
+print("🚀 MAIN.PY STARTING...", file=sys.stderr)
+print("=" * 60, file=sys.stderr)
+sys.stderr.flush()
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
