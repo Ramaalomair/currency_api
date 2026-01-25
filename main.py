@@ -1,11 +1,18 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from currency_recognition import predict_currency_class
 from datetime import datetime
 import os
 import gdown
 from pathlib import Path
+
+# استيراد دوال التعرف على العملة
+from currency_recognition import (
+    currency_recognizer,
+    initialize_currency_recognition,
+    recognize_currency_from_bytes,
+    get_currency_recognition_status
+)
 
 # إعداد الـ logging
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +40,13 @@ def download_model_if_needed():
 # تحميل الموديل عند بدء التطبيق
 download_model_if_needed()
 
+# تحميل موديلات التعرف على العملة
+logger.info("🚀 Initializing currency recognition models...")
+if initialize_currency_recognition():
+    logger.info("✅ Currency recognition initialized successfully!")
+else:
+    logger.error("❌ Failed to initialize currency recognition!")
+
 # إنشاء التطبيق
 app = FastAPI(
     title="Munir Currency Recognition API",
@@ -59,7 +73,7 @@ async def root():
         "api": "Munir Currency Recognition API",
         "version": "1.0.0",
         "status": "running",
-        "currency_recognition": "loaded",
+        "currency_recognition": "loaded" if currency_recognizer.is_loaded else "not_loaded",
         "supported_currencies": SUPPORTED_CURRENCIES,
         "languages": ["arabic", "english"]
     }
@@ -68,9 +82,12 @@ async def root():
 async def health_check():
     """فحص صحة الـ API"""
     model_exists = MODEL_PATH.exists()
+    models_loaded = currency_recognizer.is_loaded
+    
     return {
-        "status": "healthy" if model_exists else "model_missing",
-        "currency_recognition": model_exists,
+        "status": "healthy" if (model_exists and models_loaded) else "unhealthy",
+        "model_exists": model_exists,
+        "models_loaded": models_loaded,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -83,45 +100,69 @@ async def recognize_currency(file: UploadFile = File(...)):
     - file: صورة العملة
     
     Returns:
-    - denomination: فئة العملة (مثل: "100 SR")
+    - currency: فئة العملة (مثل: "100 SR")
     - confidence: نسبة الثقة
-    - text_arabic: النص بالعربية
-    - text_english: النص بالإنجليزية
+    - text: النص بالعربية والإنجليزية
     """
     try:
-        logger.info(f"Received currency recognition request: {file.filename}")
+        logger.info(f"📸 Received currency recognition request: {file.filename}")
+        
+        # التحقق من تحميل الموديلات
+        if not currency_recognizer.is_loaded:
+            raise HTTPException(
+                status_code=503,
+                detail="Currency recognition service not ready"
+            )
         
         # قراءة الصورة
         image_bytes = await file.read()
         
         # التعرف على العملة
-        result = predict_currency_class(image_bytes)
+        result = recognize_currency_from_bytes(image_bytes)
         
-        if result.get("error"):
-            logger.error(f"Recognition error: {result['error']}")
-            raise HTTPException(status_code=400, detail=result["error"])
+        if not result.get("success"):
+            logger.error(f"Recognition failed: {result.get('error', 'Unknown error')}")
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "Recognition failed")
+            )
         
-        logger.info(f"Recognition successful: {result['denomination']} ({result['confidence']:.2f}%)")
-        return result
+        # تنسيق النتيجة للـ API
+        response = {
+            "denomination": result["currency"],
+            "confidence": result["confidence_percent"],
+            "text_arabic": result["text"]["arabic"],
+            "text_english": result["text"]["english"],
+            "currency_value": result["currency_value"],
+            "currency_unit": result["currency_unit"],
+            "all_probabilities": result.get("all_probabilities", {})
+        }
+        
+        logger.info(f"✅ Recognition successful: {result['currency']} ({result['confidence_percent']:.2f}%)")
+        return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(f"❌ Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/currency_status")
 async def currency_status():
     """حالة خدمة التعرف على العملات"""
-    model_exists = MODEL_PATH.exists()
-    model_size_mb = MODEL_PATH.stat().st_size / (1024 * 1024) if model_exists else 0
+    status = get_currency_recognition_status()
+    model_size_mb = MODEL_PATH.stat().st_size / (1024 * 1024) if MODEL_PATH.exists() else 0
     
     return {
         "service": "Currency Recognition",
-        "status": "active" if model_exists else "inactive",
-        "model_loaded": model_exists,
+        "status": "active" if status["loaded"] else "inactive",
+        "model_loaded": status["loaded"],
+        "model_exists": status["model_exists"],
         "model_size_mb": f"{model_size_mb:.2f}",
-        "supported_currencies": SUPPORTED_CURRENCIES,
+        "device": status["device"],
+        "num_classes": status["num_classes"],
+        "supported_currencies": status["classes"],
+        "languages": status["languages"],
         "last_check": datetime.now().isoformat()
     }
 
