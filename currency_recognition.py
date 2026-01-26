@@ -4,7 +4,6 @@ from PIL import Image
 import io
 import os
 import urllib.request
-import cv2
 import sys
 
 # متغيرات عامة
