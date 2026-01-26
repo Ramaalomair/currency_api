@@ -3,55 +3,74 @@ import numpy as np
 from PIL import Image
 import io
 import os
-import urllib.request
 import sys
+import torch
+import timm
+from torchvision import transforms
 
-# متغيرات عامة
+# Global variables
 MODEL = None
-MODEL_PATH = "SVM_(RBF).pkl"
+FEATURE_EXTRACTOR = None
+MODEL_PATH = "models/currency/SVM_RBF.pkl"
+DEVICE = torch.device('cpu')
 
-# رابط GitHub Release
-MODEL_URL = "https://github.com/Ramaalomair/currency_api/raw/main/models/currency/SVM_(RBF).pkl"
+# Preprocessing transform for MobileNetV2
+normalize_transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
 
 def initialize_currency_recognition():
-    """تحميل موديل SVM مرة واحدة"""
-    global MODEL
+    """Load SVM model and MobileNetV2 feature extractor"""
+    global MODEL, FEATURE_EXTRACTOR
     
     print("=" * 60, file=sys.stderr)
     print("🔄 INITIALIZING CURRENCY RECOGNITION MODEL", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
     sys.stderr.flush()
     
-    if MODEL is not None:
-        print("✅ Model already loaded!", file=sys.stderr)
+    if MODEL is not None and FEATURE_EXTRACTOR is not None:
+        print("✅ Models already loaded!", file=sys.stderr)
         sys.stderr.flush()
         return True
     
     try:
-        # تحميل الموديل من GitHub Releases إذا مو موجود
-        if not os.path.exists(MODEL_PATH):
-            print(f"📥 Downloading SVM model from GitHub Releases...", file=sys.stderr)
-            print(f"   URL: {MODEL_URL}", file=sys.stderr)
-            sys.stderr.flush()
-            
-            # تحميل الملف
-            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-            file_size = os.path.getsize(MODEL_PATH)
-            print(f"✅ Model downloaded successfully! ({file_size} bytes)", file=sys.stderr)
-            sys.stderr.flush()
-        else:
-            file_size = os.path.getsize(MODEL_PATH)
-            print(f"✅ Model file already exists locally ({file_size} bytes)", file=sys.stderr)
-            sys.stderr.flush()
+        # 1. Load MobileNetV2 Feature Extractor
+        print("📥 Loading MobileNetV2 feature extractor...", file=sys.stderr)
+        sys.stderr.flush()
         
-        # تحميل موديل SVM في الذاكرة
+        FEATURE_EXTRACTOR = timm.create_model(
+            'mobilenetv2_100',
+            pretrained=True,
+            num_classes=0,
+            global_pool='avg'
+        )
+        FEATURE_EXTRACTOR = FEATURE_EXTRACTOR.to(DEVICE)
+        FEATURE_EXTRACTOR.eval()
+        
+        print("✅ MobileNetV2 loaded (Output: 1280-D features)", file=sys.stderr)
+        sys.stderr.flush()
+        
+        # 2. Load SVM Model
+        if not os.path.exists(MODEL_PATH):
+            print(f"❌ Model file not found at: {MODEL_PATH}", file=sys.stderr)
+            print(f"   Current directory: {os.getcwd()}", file=sys.stderr)
+            sys.stderr.flush()
+            return False
+        
+        file_size = os.path.getsize(MODEL_PATH)
+        print(f"✅ Model file found! ({file_size} bytes)", file=sys.stderr)
+        sys.stderr.flush()
+        
         print("🔄 Loading SVM model into memory...", file=sys.stderr)
         sys.stderr.flush()
         MODEL = joblib.load(MODEL_PATH)
         print("✅ SVM Model loaded and ready!", file=sys.stderr)
         print(f"   Model type: {type(MODEL)}", file=sys.stderr)
         
-        # معلومات إضافية عن الموديل
         if hasattr(MODEL, 'classes_'):
             print(f"   Classes: {MODEL.classes_}", file=sys.stderr)
         if hasattr(MODEL, 'n_support_'):
@@ -61,66 +80,65 @@ def initialize_currency_recognition():
         return True
         
     except Exception as e:
-        print(f"❌ Error loading model: {str(e)}", file=sys.stderr)
+        print(f"❌ Error loading models: {str(e)}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         return False
 
-def preprocess_image(image_bytes, target_size=(128, 128)):
-    """معالجة الصورة قبل التنبؤ"""
+
+def extract_features(image_bytes):
+    """Extract 1280-D features using MobileNetV2"""
+    global FEATURE_EXTRACTOR
+    
     try:
-        # فتح الصورة
+        # Open and preprocess image
         img = Image.open(io.BytesIO(image_bytes))
         
-        # تحويل لـ RGB إذا كانت RGBA
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
-        # تحويل لـ numpy array
-        img_array = np.array(img)
+        # Apply transforms
+        img_tensor = normalize_transform(img).unsqueeze(0).to(DEVICE)
         
-        # تحويل من RGB لـ BGR (OpenCV format)
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        # Extract features
+        with torch.no_grad():
+            features = FEATURE_EXTRACTOR(img_tensor)
         
-        # تغيير الحجم
-        img_resized = cv2.resize(img_bgr, target_size)
+        # Convert to numpy
+        features_np = features.cpu().numpy()
         
-        # Normalize
-        img_normalized = img_resized / 255.0
+        print(f"   Features shape: {features_np.shape}", file=sys.stderr)
+        sys.stderr.flush()
         
-        # تحويل لـ feature vector (flatten)
-        features = img_normalized.flatten().reshape(1, -1)
-        
-        return features
+        return features_np
         
     except Exception as e:
-        print(f"❌ Error preprocessing image: {str(e)}", file=sys.stderr)
+        print(f"❌ Error extracting features: {str(e)}", file=sys.stderr)
         sys.stderr.flush()
         raise
 
+
 def recognize_currency_from_bytes(image_bytes):
-    """التعرف على العملة من bytes الصورة باستخدام SVM"""
-    global MODEL
+    """Recognize currency from image bytes using MobileNetV2 + SVM"""
+    global MODEL, FEATURE_EXTRACTOR
     
-    if MODEL is None:
-        raise Exception("Model not loaded. Please wait for initialization.")
+    if MODEL is None or FEATURE_EXTRACTOR is None:
+        raise Exception("Models not loaded. Please wait for initialization.")
     
     try:
         print("🔍 Starting currency recognition...", file=sys.stderr)
         sys.stderr.flush()
         
-        # معالجة الصورة
-        features = preprocess_image(image_bytes)
-        print(f"   Features shape: {features.shape}", file=sys.stderr)
-        sys.stderr.flush()
+        # Extract features using MobileNetV2
+        features = extract_features(image_bytes)
         
-        # التنبؤ
+        # Predict using SVM
         prediction = MODEL.predict(features)
         print(f"   Prediction: {prediction}", file=sys.stderr)
         sys.stderr.flush()
         
-        # الحصول على احتمالات التنبؤ (إذا كان الموديل يدعمها)
+        # Get probabilities
         try:
             probabilities = MODEL.predict_proba(features)
             confidence = float(np.max(probabilities) * 100)
@@ -128,18 +146,19 @@ def recognize_currency_from_bytes(image_bytes):
             print(f"   Confidence: {confidence:.2f}%", file=sys.stderr)
             sys.stderr.flush()
         except AttributeError:
-            # إذا الموديل ما يدعم predict_proba
             confidence = 100.0
             print("   (Model doesn't support probability prediction - using 100%)", file=sys.stderr)
             sys.stderr.flush()
         
-        # قائمة العملات - عدّلها حسب موديلك
-        # مهم: الترتيب لازم يكون نفس ترتيب الـ labels اللي دربت عليها الموديل
+        # Currency mapping (7 Saudi Riyal denominations)
         currencies = {
             0: "10 SR",
-            1: "50 SR",
-            2: "100 SR",
-            3: "500 SR"
+            1: "100 SR",
+            2: "20 SR",
+            3: "200 SR",
+            4: "5 SR",
+            5: "50 SR",
+            6: "500 SR"
         }
         
         currency_label = int(prediction[0])
@@ -162,19 +181,19 @@ def recognize_currency_from_bytes(image_bytes):
         sys.stderr.flush()
         raise
 
+
 def get_currency_recognition_status():
-    """الحصول على حالة الموديل"""
+    """Get model status"""
     status = {
-        "initialized": MODEL is not None,
+        "initialized": MODEL is not None and FEATURE_EXTRACTOR is not None,
         "model_path": MODEL_PATH,
         "model_exists": os.path.exists(MODEL_PATH),
-        "model_url": MODEL_URL
+        "feature_extractor_loaded": FEATURE_EXTRACTOR is not None
     }
     
     if MODEL is not None:
         status["model_type"] = str(type(MODEL))
         
-        # معلومات إضافية عن الموديل
         try:
             if hasattr(MODEL, 'n_support_'):
                 status["n_support_vectors"] = MODEL.n_support_.tolist()
@@ -187,6 +206,7 @@ def get_currency_recognition_status():
     
     return status
 
+
 def currency_recognizer():
-    """للتوافق مع الكود القديم"""
+    """For backward compatibility"""
     return MODEL
