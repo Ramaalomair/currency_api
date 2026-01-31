@@ -1,35 +1,36 @@
-import sys
-print("=" * 60, file=sys.stderr)
-print("🚀 MAIN.PY STARTING...", file=sys.stderr)
-print("=" * 60, file=sys.stderr)
-sys.stderr.flush()
-
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 import logging
-from datetime import datetime
-import os
-from pathlib import Path
-import asyncio
+import sys
 
-# استيراد دوال التعرف على العملة
-from currency_recognition import (
-    currency_recognizer,
+# Import our currency recognition module
+from currency_recognition_fixed import (
     initialize_currency_recognition,
     recognize_currency_from_bytes,
     get_currency_recognition_status
 )
 
-# Setup logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
+
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Currency Recognition API")
+# Create FastAPI app
+app = FastAPI(
+    title="Saudi Currency Recognition API",
+    description="API for recognizing Saudi Riyal banknotes using MobileNetV2 + SVM",
+    version="2.0.0"
+)
 
-# CORS
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,78 +39,132 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# متغير عام للتأكد من تحميل الموديل مرة واحدة
-MODEL_LOADED = False
 
 @app.on_event("startup")
 async def startup_event():
-    """تحميل الموديل عند بداية التطبيق مرة واحدة فقط"""
-    global MODEL_LOADED
+    """Initialize model on startup"""
     logger.info("🔄 Starting model initialization...")
-    
-    try:
-        # تحقق إذا الموديل محمّل
-        status = get_currency_recognition_status()
-        if not status.get('initialized', False):
-            logger.info("📥 Downloading and loading model...")
-            await asyncio.to_thread(initialize_currency_recognition)
-        
-        MODEL_LOADED = True
+    logger.info("📥 Downloading and loading model...")
+    success = initialize_currency_recognition()
+    if success:
         logger.info("✅ Model loaded successfully!")
-        
-    except Exception as e:
-        logger.error(f"❌ Model loading failed: {str(e)}")
-        MODEL_LOADED = False
+    else:
+        logger.error("❌ Failed to load model!")
+        sys.exit(1)
+
 
 @app.get("/")
 async def root():
+    """Root endpoint"""
     return {
-        "status": "online",
-        "model_loaded": MODEL_LOADED,
-        "timestamp": datetime.now().isoformat()
+        "message": "Saudi Currency Recognition API",
+        "version": "2.0.0",
+        "status": "running",
+        "features": [
+            "Confidence threshold filtering",
+            "Better error messages",
+            "Support for low-confidence detection"
+        ],
+        "endpoints": {
+            "recognize": "/recognize (POST)",
+            "status": "/status (GET)",
+            "health": "/health (GET)"
+        }
     }
+
 
 @app.get("/health")
 async def health_check():
-    """فحص صحة الـ API والموديل"""
+    """Health check endpoint"""
     status = get_currency_recognition_status()
     return {
-        "status": "healthy" if MODEL_LOADED else "initializing",
-        "model_status": status,
-        "timestamp": datetime.now().isoformat()
+        "status": "healthy" if status["initialized"] else "unhealthy",
+        "model_loaded": status["initialized"],
+        "confidence_threshold": status.get("confidence_threshold", 60.0)
     }
+
+
+@app.get("/status")
+async def get_status():
+    """Get detailed model status"""
+    return get_currency_recognition_status()
+
 
 @app.post("/recognize")
 async def recognize_currency(file: UploadFile = File(...)):
-    """التعرف على العملة من الصورة"""
+    """
+    Recognize Saudi currency from uploaded image
     
-    if not MODEL_LOADED:
-        raise HTTPException(
-            status_code=503,
-            detail="Model is still loading, please try again in a moment"
-        )
-    
+    الآن مع فلتر الـ confidence:
+    - إذا confidence < 60% → يرجع خطأ مع رسالة واضحة
+    - إذا confidence >= 60% → يرجع النتيجة
+    """
     try:
-        # قراءة الصورة
-        contents = await file.read()
+        # Validate file type
+        if not file.content_type.startswith('image/'):
+            raise HTTPException(
+                status_code=400,
+                detail="File must be an image (JPEG, PNG, etc.)"
+            )
         
-        # التعرف على العملة
-        result = await asyncio.to_thread(
-            recognize_currency_from_bytes,
-            contents
-        )
+        # Read image bytes
+        image_bytes = await file.read()
         
+        if len(image_bytes) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Empty file uploaded"
+            )
+        
+        # Recognize currency
+        result = recognize_currency_from_bytes(image_bytes)
+        
+        # ====== Handle low confidence case ======
+        if not result.get("success", True):
+            # Return 200 OK but with error info
+            # (بعض المطورين يفضلون 200 مع success: false)
+            # إذا تبي 400 Bad Request، غيّر JSONResponse إلى HTTPException
+            return JSONResponse(
+                status_code=200,  # أو 400 إذا تبي
+                content={
+                    "success": False,
+                    "error": result.get("error"),
+                    "message_ar": result.get("message"),
+                    "message_en": result.get("message_en"),
+                    "confidence": result.get("confidence"),
+                    "suggested_currency": result.get("suggested_currency"),
+                    "threshold": result.get("threshold"),
+                    "tip": "حاول التقاط الصورة في إضاءة جيدة وتأكد من وضوح العملة"
+                }
+            )
+        
+        # ====== Success case ======
         return {
             "success": True,
-            "currency": result.get('currency'),
-            "confidence": result.get('confidence'),
-            "timestamp": datetime.now().isoformat()
+            "currency": result["currency"],
+            "confidence": result["confidence"],
+            "label": result["label"],
+            "message": f"تم التعرف على العملة: {result['currency']} بنسبة ثقة {result['confidence']:.1f}%"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Recognition error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing image: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    print("=" * 60)
+    print("🚀 MAIN.PY STARTING...")
+    print("=" * 60)
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=10000,
+        log_level="info"
+    )
