@@ -6,7 +6,7 @@ import logging
 import sys
 
 # Import our currency recognition module
-from currency_recognition_fixed import (
+from currency_recognition import (
     initialize_currency_recognition,
     recognize_currency_from_bytes,
     get_currency_recognition_status
