@@ -7,14 +7,12 @@ import sys
 import torch
 import timm
 from torchvision import transforms
-import gdown  # بدلاً من urllib.request
+import gdown
+
 # Global variables
 MODEL = None
 FEATURE_EXTRACTOR = None
 DEVICE = torch.device('cpu')
-
-# ✅ Google Drive direct download link
-GOOGLE_DRIVE_MODEL_URL = "https://drive.google.com/uc?export=download&id=1NUlvBjgPkej4WdNFL0WJFY43yTPz1M4n"
 MODEL_PATH = "models/currency/SVM_RBF.pkl"
 
 # Preprocessing transform for MobileNetV2
@@ -57,18 +55,19 @@ def initialize_currency_recognition():
         print("✅ MobileNetV2 loaded (Output: 1280-D features)", file=sys.stderr)
         sys.stderr.flush()
         
-        # 2. Download SVM Model from Google Drive if not exists
+        # 2. Download from Google Drive if not exists
         if not os.path.exists(MODEL_PATH):
             print(f"📥 Downloading SVM model from Google Drive...", file=sys.stderr)
             sys.stderr.flush()
             
-            # Create directory if needed
             os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
             
             try:
-                # Download from Google Drive
-                print(f"   URL: {GOOGLE_DRIVE_MODEL_URL[:50]}...", file=sys.stderr)
-                urllib.request.urlretrieve(GOOGLE_DRIVE_MODEL_URL, MODEL_PATH)
+                # Using gdown for Google Drive
+                file_id = "1NUlvBjgPkej4WdNFL0WJFY43yTPz1M4n"
+                url = f"https://drive.google.com/uc?id={file_id}"
+                
+                gdown.download(url, MODEL_PATH, quiet=False)
                 
                 file_size = os.path.getsize(MODEL_PATH)
                 print(f"✅ Model downloaded from Google Drive! ({file_size} bytes)", file=sys.stderr)
