@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
 import sys
+from datetime import datetime
 
 # Import our currency recognition module
 from currency_recognition import (
@@ -60,11 +61,6 @@ async def root():
         "message": "Saudi Currency Recognition API",
         "version": "2.0.0",
         "status": "running",
-        "features": [
-            "Confidence threshold filtering",
-            "Better error messages",
-            "Support for low-confidence detection"
-        ],
         "endpoints": {
             "recognize": "/recognize (POST)",
             "status": "/status (GET)",
@@ -79,8 +75,8 @@ async def health_check():
     status = get_currency_recognition_status()
     return {
         "status": "healthy" if status["initialized"] else "unhealthy",
-        "model_loaded": status["initialized"],
-        "confidence_threshold": status.get("confidence_threshold", 60.0)
+        "model_status": status,
+        "timestamp": datetime.now().isoformat()
     }
 
 
@@ -92,13 +88,7 @@ async def get_status():
 
 @app.post("/recognize")
 async def recognize_currency(file: UploadFile = File(...)):
-    """
-    Recognize Saudi currency from uploaded image
-    
-    الآن مع فلتر الـ confidence:
-    - إذا confidence < 60% → يرجع خطأ مع رسالة واضحة
-    - إذا confidence >= 60% → يرجع النتيجة
-    """
+    """Recognize Saudi currency from uploaded image"""
     try:
         # Validate file type
         if not file.content_type.startswith('image/'):
@@ -119,32 +109,12 @@ async def recognize_currency(file: UploadFile = File(...)):
         # Recognize currency
         result = recognize_currency_from_bytes(image_bytes)
         
-        # ====== Handle low confidence case ======
-        if not result.get("success", True):
-            # Return 200 OK but with error info
-            # (بعض المطورين يفضلون 200 مع success: false)
-            # إذا تبي 400 Bad Request، غيّر JSONResponse إلى HTTPException
-            return JSONResponse(
-                status_code=200,  # أو 400 إذا تبي
-                content={
-                    "success": False,
-                    "error": result.get("error"),
-                    "message_ar": result.get("message"),
-                    "message_en": result.get("message_en"),
-                    "confidence": result.get("confidence"),
-                    "suggested_currency": result.get("suggested_currency"),
-                    "threshold": result.get("threshold"),
-                    "tip": "حاول التقاط الصورة في إضاءة جيدة وتأكد من وضوح العملة"
-                }
-            )
-        
-        # ====== Success case ======
+        # Return result
         return {
             "success": True,
             "currency": result["currency"],
             "confidence": result["confidence"],
-            "label": result["label"],
-            "message": f"تم التعرف على العملة: {result['currency']} بنسبة ثقة {result['confidence']:.1f}%"
+            "timestamp": datetime.now().isoformat()
         }
         
     except HTTPException:
