@@ -12,7 +12,7 @@ from torchvision import transforms
 MODEL = None
 FEATURE_EXTRACTOR = None
 DEVICE = torch.device('cpu')
-MODEL_PATH = "models/currency/SVM_RBF.pkl"
+MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
 # Preprocessing transform for MobileNetV2
 normalize_transform = transforms.Compose([
