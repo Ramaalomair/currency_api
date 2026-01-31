@@ -7,12 +7,16 @@ import sys
 import torch
 import timm
 from torchvision import transforms
+import urllib.request
 
 # Global variables
 MODEL = None
 FEATURE_EXTRACTOR = None
-MODEL_PATH = "models/currency/SVM_RBF.pkl"
 DEVICE = torch.device('cpu')
+
+# ✅ Google Drive direct download link
+GOOGLE_DRIVE_MODEL_URL = "https://drive.google.com/uc?export=download&id=1NUlvBjgPkej4WdNFL0WJFY43yTPz1M4n"
+MODEL_PATH = "models/currency/SVM_RBF.pkl"
 
 # Preprocessing transform for MobileNetV2
 normalize_transform = transforms.Compose([
@@ -54,17 +58,32 @@ def initialize_currency_recognition():
         print("✅ MobileNetV2 loaded (Output: 1280-D features)", file=sys.stderr)
         sys.stderr.flush()
         
-        # 2. Load SVM Model
+        # 2. Download SVM Model from Google Drive if not exists
         if not os.path.exists(MODEL_PATH):
-            print(f"❌ Model file not found at: {MODEL_PATH}", file=sys.stderr)
-            print(f"   Current directory: {os.getcwd()}", file=sys.stderr)
+            print(f"📥 Downloading SVM model from Google Drive...", file=sys.stderr)
             sys.stderr.flush()
-            return False
+            
+            # Create directory if needed
+            os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+            
+            try:
+                # Download from Google Drive
+                print(f"   URL: {GOOGLE_DRIVE_MODEL_URL[:50]}...", file=sys.stderr)
+                urllib.request.urlretrieve(GOOGLE_DRIVE_MODEL_URL, MODEL_PATH)
+                
+                file_size = os.path.getsize(MODEL_PATH)
+                print(f"✅ Model downloaded from Google Drive! ({file_size} bytes)", file=sys.stderr)
+                sys.stderr.flush()
+            except Exception as e:
+                print(f"❌ Download failed: {str(e)}", file=sys.stderr)
+                sys.stderr.flush()
+                return False
+        else:
+            file_size = os.path.getsize(MODEL_PATH)
+            print(f"✅ Model file found locally! ({file_size} bytes)", file=sys.stderr)
+            sys.stderr.flush()
         
-        file_size = os.path.getsize(MODEL_PATH)
-        print(f"✅ Model file found! ({file_size} bytes)", file=sys.stderr)
-        sys.stderr.flush()
-        
+        # 3. Load SVM Model
         print("🔄 Loading SVM model into memory...", file=sys.stderr)
         sys.stderr.flush()
         MODEL = joblib.load(MODEL_PATH)
@@ -92,20 +111,16 @@ def extract_features(image_bytes):
     global FEATURE_EXTRACTOR
     
     try:
-        # Open and preprocess image
         img = Image.open(io.BytesIO(image_bytes))
         
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
-        # Apply transforms
         img_tensor = normalize_transform(img).unsqueeze(0).to(DEVICE)
         
-        # Extract features
         with torch.no_grad():
             features = FEATURE_EXTRACTOR(img_tensor)
         
-        # Convert to numpy
         features_np = features.cpu().numpy()
         
         print(f"   Features shape: {features_np.shape}", file=sys.stderr)
@@ -130,15 +145,12 @@ def recognize_currency_from_bytes(image_bytes):
         print("🔍 Starting currency recognition...", file=sys.stderr)
         sys.stderr.flush()
         
-        # Extract features using MobileNetV2
         features = extract_features(image_bytes)
         
-        # Predict using SVM
         prediction = MODEL.predict(features)
         print(f"   Prediction: {prediction}", file=sys.stderr)
         sys.stderr.flush()
         
-        # Get probabilities
         try:
             probabilities = MODEL.predict_proba(features)
             confidence = float(np.max(probabilities) * 100)
@@ -150,7 +162,6 @@ def recognize_currency_from_bytes(image_bytes):
             print("   (Model doesn't support probability prediction - using 100%)", file=sys.stderr)
             sys.stderr.flush()
         
-        # Currency mapping (7 Saudi Riyal denominations)
         currencies = {
             0: "10 SR",
             1: "100 SR",
