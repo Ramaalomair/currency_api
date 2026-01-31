@@ -7,7 +7,6 @@ import sys
 import torch
 import timm
 from torchvision import transforms
-import gdown
 
 # Global variables
 MODEL = None
@@ -55,33 +54,16 @@ def initialize_currency_recognition():
         print("✅ MobileNetV2 loaded (Output: 1280-D features)", file=sys.stderr)
         sys.stderr.flush()
         
-        # 2. Download from Google Drive if not exists
+        # 2. Load SVM Model from local file
         if not os.path.exists(MODEL_PATH):
-            print(f"📥 Downloading SVM model from Google Drive...", file=sys.stderr)
+            print(f"❌ Model file not found: {MODEL_PATH}", file=sys.stderr)
             sys.stderr.flush()
-            
-            os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-            
-            try:
-                # Using gdown for Google Drive
-                file_id = "1NUlvBjgPkej4WdNFL0WJFY43yTPz1M4n"
-                url = f"https://drive.google.com/uc?id={file_id}"
-                
-                gdown.download(url, MODEL_PATH, quiet=False)
-                
-                file_size = os.path.getsize(MODEL_PATH)
-                print(f"✅ Model downloaded from Google Drive! ({file_size} bytes)", file=sys.stderr)
-                sys.stderr.flush()
-            except Exception as e:
-                print(f"❌ Download failed: {str(e)}", file=sys.stderr)
-                sys.stderr.flush()
-                return False
-        else:
-            file_size = os.path.getsize(MODEL_PATH)
-            print(f"✅ Model file found locally! ({file_size} bytes)", file=sys.stderr)
-            sys.stderr.flush()
+            return False
         
-        # 3. Load SVM Model
+        file_size = os.path.getsize(MODEL_PATH)
+        print(f"✅ Model file found locally! ({file_size} bytes)", file=sys.stderr)
+        sys.stderr.flush()
+        
         print("🔄 Loading SVM model into memory...", file=sys.stderr)
         sys.stderr.flush()
         MODEL = joblib.load(MODEL_PATH)
@@ -92,6 +74,8 @@ def initialize_currency_recognition():
             print(f"   Classes: {MODEL.classes_}", file=sys.stderr)
         if hasattr(MODEL, 'n_support_'):
             print(f"   Support vectors: {MODEL.n_support_}", file=sys.stderr)
+        if hasattr(MODEL, 'probability'):
+            print(f"   Probability support: {MODEL.probability}", file=sys.stderr)
         
         sys.stderr.flush()
         return True
