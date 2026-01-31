@@ -11,14 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Install Python dependencies with optimizations
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY main.py currency_recognition.py ./
 
-# Create models directory (gdown will download model here)
-RUN mkdir -p models/currency
+# Copy model directory
+COPY models/ ./models/
 
 # Expose port
 EXPOSE 8080
