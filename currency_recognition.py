@@ -7,8 +7,7 @@ import sys
 import torch
 import timm
 from torchvision import transforms
-import urllib.request
-
+import gdown  # بدلاً من urllib.request
 # Global variables
 MODEL = None
 FEATURE_EXTRACTOR = None
