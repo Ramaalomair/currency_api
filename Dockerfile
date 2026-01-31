@@ -17,8 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY main.py currency_recognition.py ./
 
-# Copy model directory
-COPY models/ ./models/
+# Create models directory (gdown will download model here)
+RUN mkdir -p models/currency
 
 # Expose port
 EXPOSE 8080
