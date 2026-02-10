@@ -16,8 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Uninstall any existing opencv-python and install headless version
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip uninstall -y opencv-python opencv-contrib-python || true && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY main.py currency_recognition.py ./
