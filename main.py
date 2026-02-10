@@ -26,7 +26,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
@@ -133,6 +133,8 @@ async def recognize_currency(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error processing image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 # ✅ =============================================
 # ✅ NEW: Multiple currency recognition endpoint
 # ✅ =============================================
@@ -228,7 +230,8 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
                     logger.info(f"  ⚠️ Low confidence ({confidence:.1f}%), skipping")
             except Exception as e:
                 logger.warning(f"  ❌ Classification failed for crop: {e}")
-return {
+
+        return {
             "success": True,
             "count": len(results),
             "total": total,
@@ -329,7 +332,7 @@ def detect_with_opencv(img) -> list:
     return detections
 
 
-if name == "main":
+if __name__ == "__main__":
     print("=" * 60)
     print("🚀 MAIN.PY STARTING...")
     print("=" * 60)
