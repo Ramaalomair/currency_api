@@ -16,9 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Uninstall any existing opencv-python and install headless version
+# Install opencv-python-headless first, then other packages
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip uninstall -y opencv-python opencv-contrib-python || true && \
+    pip install --no-cache-dir opencv-python-headless==4.8.1.78 && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
