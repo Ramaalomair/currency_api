@@ -15,9 +15,6 @@ from currency_recognition import (
     get_currency_recognition_status
 )
 
-# ✅ Roboflow for banknote detection
-from inference_sdk import InferenceHTTPClient
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -44,16 +41,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Roboflow client for banknote detection
-ROBOFLOW_API_KEY = "rf_vSnKS4qCBle0NN6iPJzHDVFSg5t1"
-roboflow_client = None
-
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize model on startup"""
-    global roboflow_client
-
     logger.info("🔄 Starting model initialization...")
     logger.info("📥 Downloading and loading model...")
     success = initialize_currency_recognition()
@@ -62,16 +53,6 @@ async def startup_event():
     else:
         logger.error("❌ Failed to load model!")
         sys.exit(1)
-
-    # ✅ Initialize Roboflow client
-    try:
-        roboflow_client = InferenceHTTPClient(
-            api_url="https://detect.roboflow.com",
-            api_key=ROBOFLOW_API_KEY,
-        )
-        logger.info("✅ Roboflow client initialized!")
-    except Exception as e:
-        logger.warning(f"⚠️ Roboflow init failed: {e} — multi-detection will use fallback")
 
 
 @app.get("/")
@@ -97,7 +78,6 @@ async def health_check():
     return {
         "status": "healthy" if status["initialized"] else "unhealthy",
         "model_status": status,
-        "roboflow_ready": roboflow_client is not None,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -135,9 +115,6 @@ async def recognize_currency(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-# ✅ =============================================
-# ✅ NEW: Multiple currency recognition endpoint
-# ✅ =============================================
 @app.post("/recognize-multiple")
 async def recognize_multiple_currencies(file: UploadFile = File(...)):
     """Recognize MULTIPLE Saudi currency notes from a single image"""
@@ -156,23 +133,11 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         if img is None:
             raise HTTPException(status_code=400, detail="Could not decode image")
 
-        # --- Step 1: Detect banknote locations ---
-        detections = []
+        # Detect banknotes using OpenCV
+        detections = detect_with_opencv(img)
+        logger.info(f"🔍 Detected {len(detections)} banknote(s)")
 
-        # Try Roboflow first
-        if roboflow_client is not None:
-            try:
-                detections = detect_with_roboflow(image_bytes)
-                logger.info(f"🔍 Roboflow detected {len(detections)} banknote(s)")
-            except Exception as e:
-                logger.warning(f"⚠️ Roboflow failed: {e}, trying OpenCV fallback")
-
-        # Fallback to OpenCV if Roboflow found nothing or failed
-        if len(detections) == 0:
-            detections = detect_with_opencv(img)
-            logger.info(f"🔍 OpenCV detected {len(detections)} banknote(s)")
-
-        # If still nothing, treat the whole image as one banknote
+        # If no detections, treat whole image as single banknote
         if len(detections) == 0:
             logger.info("📄 No detections — treating entire image as single banknote")
             result = recognize_currency_from_bytes(image_bytes)
@@ -189,14 +154,14 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
                 "timestamp": datetime.now().isoformat()
             }
 
-        # --- Step 2: Crop each banknote and classify with YOUR model ---
+        # Crop and classify each banknote
         results = []
         total = 0
 
         for det in detections:
             x1, y1, x2, y2 = det["bbox"]
 
-            # Ensure coordinates are within image bounds
+            # Ensure coordinates are within bounds
             h, w = img.shape[:2]
             x1 = max(0, x1)
             y1 = max(0, y1)
@@ -209,16 +174,16 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
             if cropped.size == 0:
                 continue
 
-            # Convert cropped image to bytes
+            # Convert to bytes
             _, cropped_bytes = cv2.imencode('.jpg', cropped)
             cropped_bytes = cropped_bytes.tobytes()
 
-            # Classify with YOUR existing model
+            # Classify
             try:
                 result = recognize_currency_from_bytes(cropped_bytes)
                 confidence = result["confidence"]
 
-                if confidence > 40:  # Minimum confidence threshold
+                if confidence > 40:
                     value = _extract_value(result["currency"])
                     total += value
                     results.append({
@@ -229,7 +194,7 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
                 else:
                     logger.info(f"  ⚠️ Low confidence ({confidence:.1f}%), skipping")
             except Exception as e:
-                logger.warning(f"  ❌ Classification failed for crop: {e}")
+                logger.warning(f"  ❌ Classification failed: {e}")
 
         return {
             "success": True,
@@ -248,50 +213,16 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-# =============================================
-# Helper functions
-# =============================================
-
 def _extract_value(currency_name: str) -> int:
-    """Extract numeric value from currency name like '50 SR' → 50"""
+    """Extract numeric value from currency name"""
     try:
         return int(currency_name.replace("SR", "").strip())
     except (ValueError, AttributeError):
         return 0
 
 
-def detect_with_roboflow(image_bytes: bytes) -> list:
-    """Use Roboflow DOAS Bank Note Detector to find banknote locations"""
-    import base64
-
-    # Roboflow expects base64
-    img_b64 = base64.b64encode(image_bytes).decode('utf-8')
-
-    result = roboflow_client.infer(img_b64, model_id="bank-note-detector/1")
-
-    detections = []
-    for pred in result.get("predictions", []):
-        x = pred["x"]
-        y = pred["y"]
-        w = pred["width"]
-        h = pred["height"]
-
-        # Convert center format to corner format
-        x1 = int(x - w / 2)
-        y1 = int(y - h / 2)
-        x2 = int(x + w / 2)
-        y2 = int(y + h / 2)
-
-        detections.append({
-            "bbox": [x1, y1, x2, y2],
-            "confidence": pred.get("confidence", 0),
-        })
-
-    return detections
-
-
 def detect_with_opencv(img) -> list:
-    """Fallback: Use OpenCV contour detection to find rectangular banknotes"""
+    """Use OpenCV to detect rectangular banknotes"""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
     edges = cv2.Canny(blurred, 50, 150)
@@ -307,28 +238,23 @@ def detect_with_opencv(img) -> list:
     for contour in contours:
         area = cv2.contourArea(contour)
 
-        # Filter: banknote should be 5%–80% of image area
         if area < img_area * 0.05 or area > img_area * 0.80:
             continue
 
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
 
-        # Banknotes are rectangular (4 sides)
         if len(approx) >= 4:
             x, y, w, h = cv2.boundingRect(approx)
             aspect_ratio = w / h if h > 0 else 0
 
-            # Banknote aspect ratio ~2:1
             if 1.3 < aspect_ratio < 3.0 or 0.33 < aspect_ratio < 0.77:
                 detections.append({
                     "bbox": [x, y, x + w, y + h],
                     "confidence": 0.5,
                 })
 
-    # Sort left to right
     detections.sort(key=lambda d: d["bbox"][0])
-
     return detections
 
 
