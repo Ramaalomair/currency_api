@@ -33,8 +33,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --no-deps inference-sdk && \
     pip install --no-cache-dir \
         requests \
-        pillow \
-        numpy
+        aiohttp \
+        orjson \
+        urllib3 \
+        certifi \
+        charset-normalizer \
+        idna \
+        attrs \
+        multidict \
+        yarl \
+        aiosignal \
+        frozenlist \
+        async-timeout
 
 # Copy application files
 COPY main.py currency_recognition.py ./
