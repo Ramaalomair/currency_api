@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Install packages in specific order to prevent opencv conflicts
+# Install packages - opencv-headless MUST be installed before inference-sdk
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
         fastapi==0.104.1 \
@@ -25,26 +25,16 @@ RUN pip install --no-cache-dir --upgrade pip && \
         pillow==10.1.0 \
         numpy==1.26.2 \
         scikit-learn==1.6.1 \
-        joblib==1.3.2 && \
-    pip install --no-cache-dir \
+        joblib==1.3.2 \
         torch==2.2.0 \
-        torchvision==0.17.0 && \
-    pip install --no-cache-dir opencv-python-headless==4.8.1.78 && \
-    pip install --no-cache-dir --no-deps inference-sdk && \
-    pip install --no-cache-dir \
-        requests \
-        aiohttp \
-        orjson \
-        urllib3 \
-        certifi \
-        charset-normalizer \
-        idna \
-        attrs \
-        multidict \
-        yarl \
-        aiosignal \
-        frozenlist \
-        async-timeout
+        torchvision==0.17.0 \
+        opencv-python-headless==4.8.1.78 && \
+    pip uninstall -y opencv-python opencv-contrib-python || true && \
+    pip install --no-cache-dir inference-sdk
+
+# Verify opencv-headless is installed (not opencv-python)
+RUN python -c "import cv2; print('OpenCV version:', cv2.__version__)" && \
+    pip list | grep opencv
 
 # Copy application files
 COPY main.py currency_recognition.py ./
