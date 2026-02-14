@@ -1,271 +1,284 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import logging
-import sys
-import cv2
+from PIL import Image
+import io
+import joblib
+import torch
+import torchvision.transforms as transforms
+from torchvision import models
 import numpy as np
-from datetime import datetime
+import logging
+from typing import List, Dict
+import os
+from inference_sdk import InferenceHTTPClient
 
-# Import our currency recognition module
-from currency_recognition import (
-    initialize_currency_recognition,
-    recognize_currency_from_bytes,
-    get_currency_recognition_status
-)
-
-# Configure logging
+# ========================================
+# LOGGING
+# ========================================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
-app = FastAPI(
-    title="Saudi Currency Recognition API",
-    description="API for recognizing Saudi Riyal banknotes using MobileNetV2 + SVM",
-    version="2.1.0"
-)
+# ========================================
+# APP & CONFIG
+# ========================================
+app = FastAPI(title="Saudi Currency Recognition API")
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+MODEL_PATH = "models/mobilenetv2_svm_saudi_currency.pkl"
 
+# ✅ ضعي مفتاح Roboflow هنا
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "YOUR_API_KEY_HERE")
+ROBOFLOW_MODEL_ID = "saudi-banknotes/1"  # أو أي model ID عندك
 
+# ========================================
+# CURRENCY MAPPING
+# ========================================
+CURRENCY_NAMES = {
+    0: "5 SR", 1: "10 SR", 2: "20 SR", 3: "50 SR",
+    4: "100 SR", 5: "200 SR", 6: "500 SR"
+}
+
+CURRENCY_TEXT_AR = {
+    "5 SR": "خمسة ريالات سعودية",
+    "10 SR": "عشرة ريالات سعودية",
+    "20 SR": "عشرون ريالاً سعودياً",
+    "50 SR": "خمسون ريالاً سعودياً",
+    "100 SR": "مئة ريال سعودي",
+    "200 SR": "مئتا ريال سعودي",
+    "500 SR": "خمسمئة ريال سعودي",
+}
+
+# ========================================
+# GLOBAL MODEL
+# ========================================
+mobilenet = None
+svm_model = None
+roboflow_client = None
+
+# ========================================
+# STARTUP
+# ========================================
 @app.on_event("startup")
-async def startup_event():
-    """Initialize model on startup"""
+async def load_model():
+    global mobilenet, svm_model, roboflow_client
+    
     logger.info("🔄 Starting model initialization...")
-    logger.info("📥 Downloading and loading model...")
-    success = initialize_currency_recognition()
-    if success:
-        logger.info("✅ Model loaded successfully!")
+    logger.info("=" * 60)
+    logger.info("🔄 INITIALIZING CURRENCY RECOGNITION MODEL")
+    logger.info("=" * 60)
+    
+    # MobileNetV2
+    logger.info("📥 Loading MobileNetV2 feature extractor...")
+    mobilenet = models.mobilenet_v2(pretrained=True)
+    mobilenet.classifier = torch.nn.Identity()
+    mobilenet.eval()
+    logger.info("✅ MobileNetV2 loaded (Output: 1280-D features)")
+    
+    # SVM
+    if not os.path.exists(MODEL_PATH):
+        logger.error(f"❌ Model file not found at {MODEL_PATH}")
+        raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
+    
+    logger.info(f"✅ Model file found! ({os.path.getsize(MODEL_PATH)} bytes)")
+    logger.info("🔄 Loading SVM model into memory...")
+    
+    with open(MODEL_PATH, 'rb') as f:
+        svm_model = joblib.load(f)
+    
+    logger.info("✅ SVM Model loaded and ready!")
+    logger.info(f"   Model type: {type(svm_model)}")
+    logger.info(f"   Classes: {svm_model.classes_}")
+    logger.info(f"   Support vectors: {svm_model.n_support_}")
+    logger.info(f"   Probability support: {svm_model.probability}")
+    
+    # Roboflow
+    if ROBOFLOW_API_KEY and ROBOFLOW_API_KEY != "YOUR_API_KEY_HERE":
+        try:
+            logger.info("🔄 Initializing Roboflow client...")
+            roboflow_client = InferenceHTTPClient(
+                api_url="https://detect.roboflow.com",
+                api_key=ROBOFLOW_API_KEY
+            )
+            logger.info("✅ Roboflow client initialized!")
+        except Exception as e:
+            logger.warning(f"⚠️ Roboflow init failed: {e}")
+            roboflow_client = None
     else:
-        logger.error("❌ Failed to load model!")
-        sys.exit(1)
+        logger.warning("⚠️ Roboflow API key not set - multi-detection will be limited")
 
+# ========================================
+# FEATURE EXTRACTION
+# ========================================
+def extract_features(image: Image.Image) -> np.ndarray:
+    preprocess = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    
+    img_tensor = preprocess(image).unsqueeze(0)
+    
+    with torch.no_grad():
+        features = mobilenet(img_tensor)
+    
+    return features.squeeze().numpy()
 
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "Saudi Currency Recognition API",
-        "version": "2.1.0",
-        "status": "running",
-        "endpoints": {
-            "recognize": "/recognize (POST) — ورقة واحدة",
-            "recognize_multiple": "/recognize-multiple (POST) — عدة أوراق",
-            "status": "/status (GET)",
-            "health": "/health (GET)"
-        }
-    }
+# ========================================
+# ROBOFLOW DETECTION
+# ========================================
+def detect_with_roboflow(img_bytes: bytes) -> list:
+    """Use Roboflow to detect multiple banknotes"""
+    if roboflow_client is None:
+        logger.warning("⚠️ Roboflow client not initialized")
+        return []
+    
+    try:
+        result = roboflow_client.infer(img_bytes, model_id=ROBOFLOW_MODEL_ID)
+        
+        detections = []
+        if "predictions" in result:
+            for pred in result["predictions"]:
+                x_center = pred["x"]
+                y_center = pred["y"]
+                width = pred["width"]
+                height = pred["height"]
+                
+                x1 = int(x_center - width / 2)
+                y1 = int(y_center - height / 2)
+                x2 = int(x_center + width / 2)
+                y2 = int(y_center + height / 2)
+                
+                detections.append({
+                    "bbox": [x1, y1, x2, y2],
+                    "confidence": pred.get("confidence", 0.5)
+                })
+        
+        logger.info(f"📊 Roboflow detected {len(detections)} banknotes")
+        return detections
+    
+    except Exception as e:
+        logger.error(f"❌ Roboflow detection failed: {e}")
+        return []
 
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    status = get_currency_recognition_status()
-    return {
-        "status": "healthy" if status["initialized"] else "unhealthy",
-        "model_status": status,
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@app.get("/status")
-async def get_status():
-    """Get detailed model status"""
-    return get_currency_recognition_status()
-
-
+# ========================================
+# SINGLE RECOGNITION
+# ========================================
 @app.post("/recognize")
 async def recognize_currency(file: UploadFile = File(...)):
-    """Recognize a SINGLE Saudi currency note from uploaded image"""
     try:
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-
-        image_bytes = await file.read()
-        if len(image_bytes) == 0:
-            raise HTTPException(status_code=400, detail="Empty file uploaded")
-
-        result = recognize_currency_from_bytes(image_bytes)
-
-        return {
-            "success": True,
-            "currency": result["currency"],
-            "confidence": result["confidence"],
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        
+        features = extract_features(image)
+        prediction = svm_model.predict([features])[0]
+        probabilities = svm_model.predict_proba([features])[0]
+        confidence = float(probabilities[prediction]) * 100
+        
+        currency_name = CURRENCY_NAMES.get(prediction, "Unknown")
+        
+        return JSONResponse({
+            "currency": currency_name,
+            "confidence": round(confidence, 2),
+            "text_ar": CURRENCY_TEXT_AR.get(currency_name, "عملة غير معروفة"),
+            "text_en": currency_name
+        })
+    
     except Exception as e:
-        logger.error(f"Error processing image: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"❌ Recognition error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
+# ========================================
+# MULTI RECOGNITION WITH ROBOFLOW
+# ========================================
 @app.post("/recognize-multiple")
 async def recognize_multiple_currencies(file: UploadFile = File(...)):
-    """Recognize MULTIPLE Saudi currency notes from a single image"""
     try:
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-
-        image_bytes = await file.read()
-        if len(image_bytes) == 0:
-            raise HTTPException(status_code=400, detail="Empty file uploaded")
-
-        # Decode image for cropping
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if img is None:
-            raise HTTPException(status_code=400, detail="Could not decode image")
-
-        # Detect banknotes using OpenCV
-        detections = detect_with_opencv(img)
-        logger.info(f"🔍 Detected {len(detections)} banknote(s)")
-
-        # If no detections, treat whole image as single banknote
-        if len(detections) == 0:
-            logger.info("📄 No detections — treating entire image as single banknote")
-            result = recognize_currency_from_bytes(image_bytes)
-            return {
-                "success": True,
-                "count": 1,
-                "total": _extract_value(result["currency"]),
-                "total_text_ar": f'{_extract_value(result["currency"])} ريال سعودي',
-                "total_text_en": f'{_extract_value(result["currency"])} SAR',
-                "currencies": [{
-                    "currency": result["currency"],
-                    "confidence": result["confidence"],
-                }],
-                "timestamp": datetime.now().isoformat()
-            }
-
-        # Crop and classify each banknote
-        results = []
-        total = 0
-
-        for det in detections:
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        img_np = np.array(image)
+        
+        # ✅ استخدم Roboflow للكشف
+        detections = detect_with_roboflow(contents)
+        
+        if not detections:
+            logger.warning("⚠️ No banknotes detected by Roboflow")
+            return JSONResponse({
+                "count": 0,
+                "total": 0,
+                "currencies": [],
+                "total_text_ar": "لم يتم اكتشاف أي عملة",
+                "total_text_en": "No currency detected"
+            })
+        
+        currencies = []
+        total_value = 0
+        
+        for idx, det in enumerate(detections):
             x1, y1, x2, y2 = det["bbox"]
-
-            # Ensure coordinates are within bounds
-            h, w = img.shape[:2]
+            
+            # تأكد من الحدود
             x1 = max(0, x1)
             y1 = max(0, y1)
-            x2 = min(w, x2)
-            y2 = min(h, y2)
-
-            # Crop the banknote
-            cropped = img[y1:y2, x1:x2]
-
+            x2 = min(img_np.shape[1], x2)
+            y2 = min(img_np.shape[0], y2)
+            
+            # Crop
+            cropped = img_np[y1:y2, x1:x2]
             if cropped.size == 0:
+                logger.warning(f"⚠️ Detection {idx+1}: Empty crop, skipping")
                 continue
-
-            # Convert to bytes
-            _, cropped_bytes = cv2.imencode('.jpg', cropped)
-            cropped_bytes = cropped_bytes.tobytes()
-
+            
+            cropped_pil = Image.fromarray(cropped)
+            
             # Classify
-            try:
-                result = recognize_currency_from_bytes(cropped_bytes)
-                confidence = result["confidence"]
-
-                if confidence > 40:
-                    value = _extract_value(result["currency"])
-                    total += value
-                    results.append({
-                        "currency": result["currency"],
-                        "confidence": confidence,
-                    })
-                    logger.info(f"  ✅ {result['currency']} ({confidence:.1f}%)")
-                else:
-                    logger.info(f"  ⚠️ Low confidence ({confidence:.1f}%), skipping")
-            except Exception as e:
-                logger.warning(f"  ❌ Classification failed: {e}")
-
-        return {
-            "success": True,
-            "count": len(results),
-            "total": total,
-            "total_text_ar": f'{total} ريال سعودي',
-            "total_text_en": f'{total} SAR',
-            "currencies": results,
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
+            features = extract_features(cropped_pil)
+            prediction = svm_model.predict([features])[0]
+            probabilities = svm_model.predict_proba([features])[0]
+            confidence = float(probabilities[prediction]) * 100
+            
+            logger.info(f"💵 Detection {idx+1}: Class {prediction}, Confidence {confidence:.1f}%")
+            
+            # فلتر منخفض الثقة
+            if confidence < 35:
+                logger.info(f"⚠️ Detection {idx+1}: Low confidence, skipping")
+                continue
+            
+            currency_name = CURRENCY_NAMES.get(prediction, "Unknown")
+            value = int(currency_name.replace(" SR", "")) if currency_name != "Unknown" else 0
+            
+            currencies.append({
+                "currency": currency_name,
+                "confidence": round(confidence, 2),
+                "text_ar": CURRENCY_TEXT_AR.get(currency_name, ""),
+                "text_en": currency_name
+            })
+            
+            total_value += value
+        
+        logger.info(f"✅ Final result: {len(currencies)} currencies, Total: {total_value} SAR")
+        
+        return JSONResponse({
+            "count": len(currencies),
+            "total": total_value,
+            "currencies": currencies,
+            "total_text_ar": f"المجموع {total_value} ريال سعودي",
+            "total_text_en": f"Total {total_value} SAR"
+        })
+    
     except Exception as e:
-        logger.error(f"Error in multi-recognition: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"❌ Multi-recognition error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-def _extract_value(currency_name: str) -> int:
-    """Extract numeric value from currency name"""
-    try:
-        return int(currency_name.replace("SR", "").strip())
-    except (ValueError, AttributeError):
-        return 0
-
-
-def detect_with_opencv(img) -> list:
-    """Use OpenCV to detect rectangular banknotes"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    edges = cv2.Canny(blurred, 50, 150)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    detections = []
-    img_area = img.shape[0] * img.shape[1]
-
-    for contour in contours:
-        area = cv2.contourArea(contour)
-
-        if area < img_area * 0.05 or area > img_area * 0.80:
-            continue
-
-        peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-
-        if len(approx) >= 4:
-            x, y, w, h = cv2.boundingRect(approx)
-            aspect_ratio = w / h if h > 0 else 0
-
-            if 1.3 < aspect_ratio < 3.0 or 0.33 < aspect_ratio < 0.77:
-                detections.append({
-                    "bbox": [x, y, x + w, y + h],
-                    "confidence": 0.5,
-                })
-
-    detections.sort(key=lambda d: d["bbox"][0])
-    return detections
-
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("🚀 MAIN.PY STARTING...")
-    print("=" * 60)
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=10000,
-        log_level="info"
-    )
+# ========================================
+# HEALTH CHECK
+# ========================================
+@app.get("/")
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "model": "loaded",
+        "roboflow": "enabled" if roboflow_client else "disabled"
+    }
