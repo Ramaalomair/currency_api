@@ -8,7 +8,6 @@ import torchvision.transforms as transforms
 from torchvision import models
 import numpy as np
 import logging
-from typing import List, Dict
 import os
 from inference_sdk import InferenceHTTPClient
 
@@ -26,11 +25,12 @@ logger = logging.getLogger(__name__)
 # ========================================
 app = FastAPI(title="Saudi Currency Recognition API")
 
-MODEL_PATH = "models/mobilenetv2_svm_saudi_currency.pkl"
+# ✅ استخدمي الـ SVM model اللي عندك
+MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
-# ✅ ضعي مفتاح Roboflow هنا
-ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "YOUR_API_KEY_HERE")
-ROBOFLOW_MODEL_ID = "saudi-banknotes/1"  # أو أي model ID عندك
+# ✅ Roboflow config
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "nRtva64KTNdrjch2Fs8v")
+ROBOFLOW_MODEL_ID = "currency-detection/1"  # جربي هذا أو أي model عندك
 
 # ========================================
 # CURRENCY MAPPING
@@ -51,7 +51,7 @@ CURRENCY_TEXT_AR = {
 }
 
 # ========================================
-# GLOBAL MODEL
+# GLOBAL MODELS
 # ========================================
 mobilenet = None
 svm_model = None
@@ -64,9 +64,8 @@ roboflow_client = None
 async def load_model():
     global mobilenet, svm_model, roboflow_client
     
-    logger.info("🔄 Starting model initialization...")
     logger.info("=" * 60)
-    logger.info("🔄 INITIALIZING CURRENCY RECOGNITION MODEL")
+    logger.info("🔄 INITIALIZING CURRENCY RECOGNITION SYSTEM")
     logger.info("=" * 60)
     
     # MobileNetV2
@@ -74,24 +73,24 @@ async def load_model():
     mobilenet = models.mobilenet_v2(pretrained=True)
     mobilenet.classifier = torch.nn.Identity()
     mobilenet.eval()
-    logger.info("✅ MobileNetV2 loaded (Output: 1280-D features)")
+    logger.info("✅ MobileNetV2 loaded (1280-D features)")
     
     # SVM
     if not os.path.exists(MODEL_PATH):
         logger.error(f"❌ Model file not found at {MODEL_PATH}")
         raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
     
-    logger.info(f"✅ Model file found! ({os.path.getsize(MODEL_PATH)} bytes)")
-    logger.info("🔄 Loading SVM model into memory...")
+    logger.info(f"📥 Loading SVM model: {MODEL_PATH}")
+    logger.info(f"   File size: {os.path.getsize(MODEL_PATH)} bytes")
     
     with open(MODEL_PATH, 'rb') as f:
         svm_model = joblib.load(f)
     
-    logger.info("✅ SVM Model loaded and ready!")
+    logger.info("✅ SVM Model loaded!")
     logger.info(f"   Model type: {type(svm_model)}")
     logger.info(f"   Classes: {svm_model.classes_}")
-    logger.info(f"   Support vectors: {svm_model.n_support_}")
-    logger.info(f"   Probability support: {svm_model.probability}")
+    if hasattr(svm_model, 'n_support_'):
+        logger.info(f"   Support vectors: {svm_model.n_support_}")
     
     # Roboflow
     if ROBOFLOW_API_KEY and ROBOFLOW_API_KEY != "YOUR_API_KEY_HERE":
@@ -101,12 +100,12 @@ async def load_model():
                 api_url="https://detect.roboflow.com",
                 api_key=ROBOFLOW_API_KEY
             )
-            logger.info("✅ Roboflow client initialized!")
+            logger.info("✅ Roboflow client ready!")
         except Exception as e:
             logger.warning(f"⚠️ Roboflow init failed: {e}")
             roboflow_client = None
     else:
-        logger.warning("⚠️ Roboflow API key not set - multi-detection will be limited")
+        logger.warning("⚠️ Roboflow API key not set")
 
 # ========================================
 # FEATURE EXTRACTION
@@ -131,7 +130,7 @@ def extract_features(image: Image.Image) -> np.ndarray:
 def detect_with_roboflow(img_bytes: bytes) -> list:
     """Use Roboflow to detect multiple banknotes"""
     if roboflow_client is None:
-        logger.warning("⚠️ Roboflow client not initialized")
+        logger.warning("⚠️ Roboflow not available")
         return []
     
     try:
@@ -190,7 +189,7 @@ async def recognize_currency(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========================================
-# MULTI RECOGNITION WITH ROBOFLOW
+# MULTI RECOGNITION
 # ========================================
 @app.post("/recognize-multiple")
 async def recognize_multiple_currencies(file: UploadFile = File(...)):
@@ -203,7 +202,7 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         detections = detect_with_roboflow(contents)
         
         if not detections:
-            logger.warning("⚠️ No banknotes detected by Roboflow")
+            logger.warning("⚠️ No banknotes detected")
             return JSONResponse({
                 "count": 0,
                 "total": 0,
@@ -218,31 +217,26 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         for idx, det in enumerate(detections):
             x1, y1, x2, y2 = det["bbox"]
             
-            # تأكد من الحدود
             x1 = max(0, x1)
             y1 = max(0, y1)
             x2 = min(img_np.shape[1], x2)
             y2 = min(img_np.shape[0], y2)
             
-            # Crop
             cropped = img_np[y1:y2, x1:x2]
             if cropped.size == 0:
-                logger.warning(f"⚠️ Detection {idx+1}: Empty crop, skipping")
                 continue
             
             cropped_pil = Image.fromarray(cropped)
             
-            # Classify
+            # ✅ استخدم SVM للتصنيف
             features = extract_features(cropped_pil)
             prediction = svm_model.predict([features])[0]
             probabilities = svm_model.predict_proba([features])[0]
             confidence = float(probabilities[prediction]) * 100
             
-            logger.info(f"💵 Detection {idx+1}: Class {prediction}, Confidence {confidence:.1f}%")
+            logger.info(f"💵 Detection {idx+1}: Predicted={prediction}, Confidence={confidence:.1f}%")
             
-            # فلتر منخفض الثقة
-            if confidence < 35:
-                logger.info(f"⚠️ Detection {idx+1}: Low confidence, skipping")
+            if confidence < 40:
                 continue
             
             currency_name = CURRENCY_NAMES.get(prediction, "Unknown")
@@ -257,7 +251,7 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
             
             total_value += value
         
-        logger.info(f"✅ Final result: {len(currencies)} currencies, Total: {total_value} SAR")
+        logger.info(f"✅ Final: {len(currencies)} currencies, Total: {total_value} SAR")
         
         return JSONResponse({
             "count": len(currencies),
@@ -279,6 +273,6 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
 async def health():
     return {
         "status": "healthy",
-        "model": "loaded",
-        "roboflow": "enabled" if roboflow_client else "disabled"
+        "svm_loaded": svm_model is not None,
+        "roboflow_enabled": roboflow_client is not None
     }
