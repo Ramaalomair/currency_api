@@ -9,7 +9,7 @@ from torchvision import models
 import numpy as np
 import logging
 import os
-from inference_sdk import InferenceHTTPClient
+import requests
 
 # ========================================
 # LOGGING
@@ -25,12 +25,11 @@ logger = logging.getLogger(__name__)
 # ========================================
 app = FastAPI(title="Saudi Currency Recognition API")
 
-# ✅ استخدمي الـ SVM model اللي عندك
 MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
-# ✅ Roboflow config
+# Roboflow config
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "nRtva64KTNdrjch2Fs8v")
-ROBOFLOW_MODEL_ID = "currency-detection/1"  # جربي هذا أو أي model عندك
+ROBOFLOW_MODEL_ID = "currency-detection/1"
 
 # ========================================
 # CURRENCY MAPPING
@@ -55,14 +54,13 @@ CURRENCY_TEXT_AR = {
 # ========================================
 mobilenet = None
 svm_model = None
-roboflow_client = None
 
 # ========================================
 # STARTUP
 # ========================================
 @app.on_event("startup")
 async def load_model():
-    global mobilenet, svm_model, roboflow_client
+    global mobilenet, svm_model
     
     logger.info("=" * 60)
     logger.info("🔄 INITIALIZING CURRENCY RECOGNITION SYSTEM")
@@ -92,20 +90,17 @@ async def load_model():
     if hasattr(svm_model, 'n_support_'):
         logger.info(f"   Support vectors: {svm_model.n_support_}")
     
-    # Roboflow
-    if ROBOFLOW_API_KEY and ROBOFLOW_API_KEY != "YOUR_API_KEY_HERE":
-        try:
-            logger.info("🔄 Initializing Roboflow client...")
-            roboflow_client = InferenceHTTPClient(
-                api_url="https://detect.roboflow.com",
-                api_key=ROBOFLOW_API_KEY
-            )
-            logger.info("✅ Roboflow client ready!")
-        except Exception as e:
-            logger.warning(f"⚠️ Roboflow init failed: {e}")
-            roboflow_client = None
+    # Test Roboflow
+    logger.info("🔄 Checking Roboflow configuration...")
+    if ROBOFLOW_API_KEY and ROBOFLOW_API_KEY != "nRtva64KTNdrjch2Fs8v":
+        logger.info("✅ Roboflow API key configured")
+        logger.info(f"   Model ID: {ROBOFLOW_MODEL_ID}")
     else:
         logger.warning("⚠️ Roboflow API key not set")
+    
+    logger.info("=" * 60)
+    logger.info("✅ SYSTEM READY!")
+    logger.info("=" * 60)
 
 # ========================================
 # FEATURE EXTRACTION
@@ -128,13 +123,25 @@ def extract_features(image: Image.Image) -> np.ndarray:
 # ROBOFLOW DETECTION
 # ========================================
 def detect_with_roboflow(img_bytes: bytes) -> list:
-    """Use Roboflow to detect multiple banknotes"""
-    if roboflow_client is None:
-        logger.warning("⚠️ Roboflow not available")
-        return []
-    
+    """Use Roboflow REST API to detect multiple banknotes"""
     try:
-        result = roboflow_client.infer(img_bytes, model_id=ROBOFLOW_MODEL_ID)
+        url = f"https://detect.roboflow.com/{ROBOFLOW_MODEL_ID}"
+        
+        logger.info(f"📤 Calling Roboflow API: {url}")
+        
+        response = requests.post(
+            url,
+            params={"api_key": ROBOFLOW_API_KEY},
+            files={"file": ("image.jpg", img_bytes, "image/jpeg")},
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"❌ Roboflow API error: {response.status_code}")
+            logger.error(f"   Response: {response.text}")
+            return []
+        
+        result = response.json()
         
         detections = []
         if "predictions" in result:
@@ -157,6 +164,9 @@ def detect_with_roboflow(img_bytes: bytes) -> list:
         logger.info(f"📊 Roboflow detected {len(detections)} banknotes")
         return detections
     
+    except requests.exceptions.Timeout:
+        logger.error("❌ Roboflow API timeout")
+        return []
     except Exception as e:
         logger.error(f"❌ Roboflow detection failed: {e}")
         return []
@@ -198,7 +208,9 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         img_np = np.array(image)
         
-        # ✅ استخدم Roboflow للكشف
+        logger.info("🔍 Starting multi-currency recognition...")
+        
+        # Detect with Roboflow
         detections = detect_with_roboflow(contents)
         
         if not detections:
@@ -224,19 +236,21 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
             
             cropped = img_np[y1:y2, x1:x2]
             if cropped.size == 0:
+                logger.warning(f"⚠️ Detection {idx+1}: Empty crop, skipping")
                 continue
             
             cropped_pil = Image.fromarray(cropped)
             
-            # ✅ استخدم SVM للتصنيف
+            # Classify with SVM
             features = extract_features(cropped_pil)
             prediction = svm_model.predict([features])[0]
             probabilities = svm_model.predict_proba([features])[0]
             confidence = float(probabilities[prediction]) * 100
             
-            logger.info(f"💵 Detection {idx+1}: Predicted={prediction}, Confidence={confidence:.1f}%")
+            logger.info(f"💵 Detection {idx+1}: Class={prediction}, Confidence={confidence:.1f}%")
             
             if confidence < 40:
+                logger.info(f"⚠️ Detection {idx+1}: Low confidence, skipping")
                 continue
             
             currency_name = CURRENCY_NAMES.get(prediction, "Unknown")
@@ -271,8 +285,10 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
 @app.get("/")
 @app.get("/health")
 async def health():
+    roboflow_ok = ROBOFLOW_API_KEY and ROBOFLOW_API_KEY != "nRtva64KTNdrjch2Fs8v"
+    
     return {
         "status": "healthy",
         "svm_loaded": svm_model is not None,
-        "roboflow_enabled": roboflow_client is not None
+        "roboflow_configured": roboflow_ok
     }
