@@ -29,7 +29,7 @@ MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
 # Roboflow config
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "nRtva64KTNdrjch2Fs8v")
-ROBOFLOW_MODEL_ID = "banknote-detection/1"
+ROBOFLOW_MODEL_ID = "coco/3"
 # ========================================
 # CURRENCY MAPPING
 # ========================================
