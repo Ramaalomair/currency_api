@@ -92,7 +92,7 @@ async def load_model():
     
     # Test Roboflow
     logger.info("🔄 Checking Roboflow configuration...")
-    if ROBOFLOW_API_KEY and ROBOFLOW_API_KEY != "nRtva64KTNdrjch2Fs8v":
+    if ROBOFLOW_API_KEY and len(ROBOFLOW_API_KEY) > 10:
         logger.info("✅ Roboflow API key configured")
         logger.info(f"   Model ID: {ROBOFLOW_MODEL_ID}")
     else:
