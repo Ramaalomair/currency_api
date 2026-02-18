@@ -9,7 +9,8 @@ from torchvision import models
 import numpy as np
 import logging
 import os
-import cv2
+import requests
+import base64
 
 # ========================================
 # LOGGING
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Saudi Currency Recognition API")
 
 MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
+ROBOFLOW_MODEL = "egypt-banknote-b3jlr/1"
 
 # ========================================
 # CURRENCY MAPPING
@@ -87,7 +90,7 @@ async def load_model():
         logger.info(f"   Support vectors: {svm_model.n_support_}")
     
     logger.info("=" * 60)
-    logger.info("✅ SYSTEM READY WITH OPENCV DETECTION!")
+    logger.info("✅ SYSTEM READY WITH ROBOFLOW DETECTION!")
     logger.info("=" * 60)
 
 # ========================================
@@ -108,106 +111,46 @@ def extract_features(image: Image.Image) -> np.ndarray:
     return features.squeeze().numpy()
 
 # ========================================
-# OPENCV DETECTION HELPERS
+# ROBOFLOW DETECTION
 # ========================================
-def compute_iou(box1, box2):
-    """Calculate Intersection over Union"""
-    x1, y1, x2, y2 = box1
-    fx1, fy1, fx2, fy2 = box2
+def detect_banknotes_roboflow(img_array: np.ndarray) -> list:
+    """Detect banknotes using Roboflow hosted API"""
     
-    ix1 = max(x1, fx1)
-    iy1 = max(y1, fy1)
-    ix2 = min(x2, fx2)
-    iy2 = min(y2, fy2)
+    # Convert to base64
+    image_pil = Image.fromarray(img_array)
+    buffer = io.BytesIO()
+    image_pil.save(buffer, format="JPEG")
+    img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
     
-    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-    area1 = (x2 - x1) * (y2 - y1)
-    area2 = (fx2 - fx1) * (fy2 - fy1)
-    union = area1 + area2 - inter
+    # Call Roboflow API
+    response = requests.post(
+        f"https://detect.roboflow.com/{ROBOFLOW_MODEL}",
+        params={"api_key": ROBOFLOW_API_KEY},
+        data=img_base64,
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
     
-    return inter / union if union > 0 else 0
-
-# ========================================
-# ENHANCED OPENCV DETECTION
-# ========================================
-def detect_banknotes_opencv(img_array: np.ndarray) -> list:
-    """Enhanced OpenCV detection for multiple banknotes"""
+    result = response.json()
+    detections = []
     
-    # Convert RGB to BGR for OpenCV
-    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    
-    # Strong contrast enhancement
-    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-    
-    all_detections = []
-    img_area = img_array.shape[0] * img_array.shape[1]
-    
-    # Multiple edge detection configurations
-    configs = [
-        (3, 15, 50),   # (blur_kernel, canny_low, canny_high)
-        (5, 20, 70),
-        (5, 25, 90),
-        (7, 30, 100),
-        (9, 20, 80),
-    ]
-    
-    for blur_k, canny_l, canny_h in configs:
-        blurred = cv2.GaussianBlur(gray, (blur_k, blur_k), 0)
-        edges = cv2.Canny(blurred, canny_l, canny_h)
+    for pred in result.get("predictions", []):
+        x_center = pred["x"]
+        y_center = pred["y"]
+        w = pred["width"]
+        h = pred["height"]
         
-        # Morphological closing
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 13))
-        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        x1 = int(x_center - w / 2)
+        y1 = int(y_center - h / 2)
+        x2 = int(x_center + w / 2)
+        y2 = int(y_center + h / 2)
         
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            
-            # Area filter: 1% - 95% of image
-            if area < img_area * 0.01 or area > img_area * 0.95:
-                continue
-            
-            peri = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-            
-            if len(approx) >= 4:
-                x, y, w, h = cv2.boundingRect(approx)
-                aspect_ratio = w / h if h > 0 else 0
-                
-                # Wide aspect ratio range
-                if 0.15 < aspect_ratio < 6.0:
-                    all_detections.append({
-                        "bbox": [x, y, x + w, y + h],
-                        "area": area
-                    })
+        detections.append({
+            "bbox": [x1, y1, x2, y2],
+            "confidence": pred["confidence"]
+        })
     
-    # Remove duplicates using IoU
-    unique_detections = []
-    for det in all_detections:
-        is_duplicate = False
-        for unique_det in unique_detections:
-            iou = compute_iou(det["bbox"], unique_det["bbox"])
-            if iou > 0.3:  # 30% overlap = duplicate
-                is_duplicate = True
-                # Keep the larger one
-                if det["area"] > unique_det["area"]:
-                    unique_detections.remove(unique_det)
-                    is_duplicate = False
-                break
-        
-        if not is_duplicate:
-            unique_detections.append(det)
-    
-    # Sort left to right
-    unique_detections.sort(key=lambda d: d["bbox"][0])
-    
-    logger.info(f"📊 OpenCV detected {len(unique_detections)} banknotes")
-    
-    # Return in expected format
-    return [{"bbox": d["bbox"], "confidence": 0.5} for d in unique_detections]
+    logger.info(f"📊 Roboflow detected {len(detections)} banknotes")
+    return detections
 
 # ========================================
 # SINGLE RECOGNITION
@@ -237,7 +180,7 @@ async def recognize_currency(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========================================
-# MULTI RECOGNITION WITH OPENCV
+# MULTI RECOGNITION WITH ROBOFLOW
 # ========================================
 @app.post("/recognize-multiple")
 async def recognize_multiple_currencies(file: UploadFile = File(...)):
@@ -246,10 +189,10 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         img_np = np.array(image)
         
-        logger.info("🔍 Starting multi-currency recognition with OpenCV...")
+        logger.info("🔍 Starting multi-currency recognition with Roboflow...")
         
-        # Detect with OpenCV
-        detections = detect_banknotes_opencv(img_np)
+        # Detect with Roboflow
+        detections = detect_banknotes_roboflow(img_np)
         
         if not detections:
             logger.warning("⚠️ No banknotes detected")
@@ -329,5 +272,5 @@ async def health():
     return {
         "status": "healthy",
         "svm_loaded": svm_model is not None,
-        "detection_method": "OpenCV"
+        "detection_method": "Roboflow"
     }
