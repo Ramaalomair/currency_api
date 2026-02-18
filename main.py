@@ -131,6 +131,7 @@ def detect_banknotes_roboflow(img_array: np.ndarray) -> list:
     )
     
     result = response.json()
+    logger.info(f"🔍 Roboflow response: {result}")
     detections = []
     
     for pred in result.get("predictions", []):
