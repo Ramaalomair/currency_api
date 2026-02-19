@@ -28,8 +28,7 @@ app = FastAPI(title="Saudi Currency Recognition API")
 
 MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
-ROBOFLOW_MODEL = "egypt-banknote-b3jlr/1"
-
+ROBOFLOW_MODEL = "currency-sahma-loldm/1"
 # ========================================
 # CURRENCY MAPPING
 # ========================================
