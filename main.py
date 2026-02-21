@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+    from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from PIL import Image
 import io
@@ -100,29 +100,39 @@ def extract_features(image: Image.Image) -> np.ndarray:
     return features.squeeze().numpy()
 
 # ========================================
-# OPENCV BANKNOTE DETECTION
+# OPENCV BANKNOTE DETECTION (IMPROVED)
 # ========================================
 def detect_banknotes_opencv(img_array: np.ndarray) -> list:
     height, width = img_array.shape[:2]
     
-    min_area = (width * height) * 0.01
-    max_area = (width * height) * 0.95
+    # ✅ خفضنا الحد الأدنى للمساحة
+    min_area = (width * height) * 0.005  # 0.5% بدل 1%
+    max_area = (width * height) * 0.80   # 80% بدل 95%
     
     logger.info(f"📐 Image size: {width}x{height}")
+    logger.info(f"📐 Area range: {min_area:.0f} - {max_area:.0f}")
     
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # ✅ تحسين التباين
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     
-    blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 100)
+    # ✅ Adaptive threshold بدل Canny - أفضل للعملات
+    thresh = cv2.adaptiveThreshold(
+        enhanced, 255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 
+        11, 2
+    )
     
-    kernel = np.ones((3, 3), np.uint8)
-    dilated = cv2.dilate(edges, kernel, iterations=2)
-    closed = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # تنظيف
+    kernel = np.ones((5, 5), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
     
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # إيجاد الـ contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     logger.info(f"🔍 Found {len(contours)} initial contours")
     
@@ -145,26 +155,29 @@ def detect_banknotes_opencv(img_array: np.ndarray) -> list:
         
         aspect_ratio = w / h
         
-        if 1.5 < aspect_ratio < 3.5:
+        # ✅ وسعنا المدى شوي
+        if 1.3 < aspect_ratio < 4.0:
             x, y, bw, bh = cv2.boundingRect(contour)
             
-            padding = 5
+            # ✅ زدنا الـ padding
+            padding = 10
             x1 = max(0, x - padding)
             y1 = max(0, y - padding)
             x2 = min(width, x + bw + padding)
             y2 = min(height, y + bh + padding)
             
-            ideal_ratio = 2.2
-            ratio_diff = abs(aspect_ratio - ideal_ratio)
-            confidence = max(0.5, 1.0 - (ratio_diff * 0.2))
+            confidence = max(0.5, 1.0 - (abs(aspect_ratio - 2.2) * 0.15))
             
             detections.append({
                 "bbox": [x1, y1, x2, y2],
                 "confidence": confidence,
                 "area": area
             })
+            
+            logger.info(f"✅ Found: bbox=[{x1},{y1},{x2},{y2}], ratio={aspect_ratio:.2f}")
     
-    detections = remove_overlapping_detections(detections)
+    # ✅ خفضنا العتبة
+    detections = remove_overlapping_detections(detections, iou_threshold=0.3)
     logger.info(f"📊 Final detections: {len(detections)}")
     
     return detections
