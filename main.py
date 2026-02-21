@@ -11,25 +11,16 @@ import logging
 import os
 import cv2
 
-# ========================================
-# LOGGING
-# ========================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# ========================================
-# APP & CONFIG
-# ========================================
 app = FastAPI(title="Saudi Currency Recognition API")
 
 MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
-# ========================================
-# CURRENCY MAPPING
-# ========================================
 CURRENCY_NAMES = {
     0: "5 SR", 1: "10 SR", 2: "20 SR", 3: "50 SR",
     4: "100 SR", 5: "200 SR", 6: "500 SR"
@@ -45,46 +36,39 @@ CURRENCY_TEXT_AR = {
     "500 SR": "خمسمئة ريال سعودي",
 }
 
-# ========================================
-# GLOBAL MODELS
-# ========================================
 mobilenet = None
 svm_model = None
 
-# ========================================
-# STARTUP
-# ========================================
+
 @app.on_event("startup")
 async def load_model():
     global mobilenet, svm_model
     
     logger.info("=" * 60)
-    logger.info("🔄 INITIALIZING CURRENCY RECOGNITION SYSTEM")
+    logger.info("INITIALIZING CURRENCY RECOGNITION SYSTEM")
     logger.info("=" * 60)
     
-    logger.info("📥 Loading MobileNetV2 feature extractor...")
-    mobilenet = models.mobilenet_v2(pretrained=True)
+    logger.info("Loading MobileNetV2 feature extractor...")
+    mobilenet = models.mobilenet_v2(weights="IMAGENET1K_V1")
     mobilenet.classifier = torch.nn.Identity()
     mobilenet.eval()
-    logger.info("✅ MobileNetV2 loaded (1280-D features)")
+    logger.info("MobileNetV2 loaded (1280-D features)")
     
     if not os.path.exists(MODEL_PATH):
-        logger.error(f"❌ Model file not found at {MODEL_PATH}")
+        logger.error(f"Model file not found at {MODEL_PATH}")
         raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
     
-    logger.info(f"📥 Loading SVM model: {MODEL_PATH}")
+    logger.info(f"Loading SVM model: {MODEL_PATH}")
     
     with open(MODEL_PATH, 'rb') as f:
         svm_model = joblib.load(f)
     
-    logger.info("✅ SVM Model loaded!")
+    logger.info("SVM Model loaded!")
     logger.info("=" * 60)
-    logger.info("✅ SYSTEM READY WITH OPENCV DETECTION!")
+    logger.info("SYSTEM READY WITH OPENCV DETECTION!")
     logger.info("=" * 60)
 
-# ========================================
-# FEATURE EXTRACTION
-# ========================================
+
 def extract_features(image: Image.Image) -> np.ndarray:
     preprocess = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -99,42 +83,35 @@ def extract_features(image: Image.Image) -> np.ndarray:
     
     return features.squeeze().numpy()
 
-# ========================================
-# OPENCV BANKNOTE DETECTION (IMPROVED)
-# ========================================
+
 def detect_banknotes_opencv(img_array: np.ndarray) -> list:
     height, width = img_array.shape[:2]
     
-    # ✅ خفضنا الحد الأدنى للمساحة
-    min_area = (width * height) * 0.005  # 0.5% بدل 1%
-    max_area = (width * height) * 0.80   # 80% بدل 95%
+    min_area = (width * height) * 0.005
+    max_area = (width * height) * 0.80
     
-    logger.info(f"📐 Image size: {width}x{height}")
-    logger.info(f"📐 Area range: {min_area:.0f} - {max_area:.0f}")
+    logger.info(f"Image size: {width}x{height}")
+    logger.info(f"Area range: {min_area:.0f} - {max_area:.0f}")
     
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     
-    # ✅ تحسين التباين
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     
-    # ✅ Adaptive threshold بدل Canny - أفضل للعملات
     thresh = cv2.adaptiveThreshold(
-        enhanced, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 
+        enhanced, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
         11, 2
     )
     
-    # تنظيف
     kernel = np.ones((5, 5), np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
     
-    # إيجاد الـ contours
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    logger.info(f"🔍 Found {len(contours)} initial contours")
+    logger.info(f"Found {len(contours)} initial contours")
     
     detections = []
     
@@ -149,17 +126,15 @@ def detect_banknotes_opencv(img_array: np.ndarray) -> list:
         
         if w == 0 or h == 0:
             continue
-            
+        
         if h > w:
             w, h = h, w
         
         aspect_ratio = w / h
         
-        # ✅ وسعنا المدى شوي
         if 1.3 < aspect_ratio < 4.0:
             x, y, bw, bh = cv2.boundingRect(contour)
             
-            # ✅ زدنا الـ padding
             padding = 10
             x1 = max(0, x - padding)
             y1 = max(0, y - padding)
@@ -174,11 +149,10 @@ def detect_banknotes_opencv(img_array: np.ndarray) -> list:
                 "area": area
             })
             
-            logger.info(f"✅ Found: bbox=[{x1},{y1},{x2},{y2}], ratio={aspect_ratio:.2f}")
+            logger.info(f"Found: bbox=[{x1},{y1},{x2},{y2}], ratio={aspect_ratio:.2f}")
     
-    # ✅ خفضنا العتبة
     detections = remove_overlapping_detections(detections, iou_threshold=0.3)
-    logger.info(f"📊 Final detections: {len(detections)}")
+    logger.info(f"Final detections: {len(detections)}")
     
     return detections
 
@@ -216,9 +190,6 @@ def remove_overlapping_detections(detections: list, iou_threshold: float = 0.5) 
     return kept
 
 
-# ========================================
-# SINGLE RECOGNITION
-# ========================================
 @app.post("/recognize")
 async def recognize_currency(file: UploadFile = File(...)):
     try:
@@ -240,13 +211,10 @@ async def recognize_currency(file: UploadFile = File(...)):
         })
     
     except Exception as e:
-        logger.error(f"❌ Recognition error: {e}")
+        logger.error(f"Recognition error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ========================================
-# MULTI RECOGNITION WITH OPENCV
-# ========================================
 @app.post("/recognize-multiple")
 async def recognize_multiple_currencies(file: UploadFile = File(...)):
     try:
@@ -254,12 +222,12 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         img_np = np.array(image)
         
-        logger.info("🔍 Starting multi-currency recognition with OpenCV...")
+        logger.info("Starting multi-currency recognition with OpenCV...")
         
         detections = detect_banknotes_opencv(img_np)
         
         if not detections:
-            logger.warning("⚠️ No banknotes detected, trying full image...")
+            logger.warning("No banknotes detected, trying full image...")
             features = extract_features(image)
             prediction = svm_model.predict([features])[0]
             probabilities = svm_model.predict_proba([features])[0]
@@ -307,7 +275,7 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
             probabilities = svm_model.predict_proba([features])[0]
             confidence = float(probabilities[prediction]) * 100
             
-            logger.info(f"💵 Detection {idx+1}: Class={prediction}, Confidence={confidence:.1f}%")
+            logger.info(f"Detection {idx+1}: Class={prediction}, Confidence={confidence:.1f}%")
             
             if confidence < 40:
                 continue
@@ -324,7 +292,7 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
             
             total_value += value
         
-        logger.info(f"✅ Final: {len(currencies)} currencies, Total: {total_value} SAR")
+        logger.info(f"Final: {len(currencies)} currencies, Total: {total_value} SAR")
         
         return JSONResponse({
             "count": len(currencies),
@@ -335,13 +303,10 @@ async def recognize_multiple_currencies(file: UploadFile = File(...)):
         })
     
     except Exception as e:
-        logger.error(f"❌ Multi-recognition error: {e}")
+        logger.error(f"Multi-recognition error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ========================================
-# HEALTH CHECK
-# ========================================
 @app.get("/")
 @app.get("/health")
 async def health():
