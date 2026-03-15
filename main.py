@@ -26,8 +26,13 @@ app = FastAPI(title="Saudi Currency Recognition API")
 MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
 CURRENCY_NAMES = {
-    0: "5 SR", 1: "10 SR", 2: "20 SR", 3: "50 SR",
-    4: "100 SR", 5: "200 SR", 6: "500 SR"
+    0: "10 SR",
+    1: "100 SR",
+    2: "20 SR",
+    3: "200 SR",
+    4: "5 SR",
+    5: "50 SR",
+    6: "500 SR"
 }
 
 CURRENCY_TEXT_AR = {
