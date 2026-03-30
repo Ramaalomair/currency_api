@@ -44,10 +44,9 @@ CURRENCY_TEXT_AR = {
     "500 SR": "خمسمئة ريال سعودي",
 }
 
-# ✅ نفس الـ preprocessing اللي استخدمتيه وقت التدريب (Cell 22 في الـ notebook)
+# ✅ Resize مباشرة بدون CenterCrop — عشان ما يقطع حواف الفلوس
 PREPROCESS = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -92,8 +91,8 @@ async def load_model():
 
 def extract_features(image: Image.Image) -> np.ndarray:
     """
-    استخراج الـ features بنفس الطريقة اللي اتدرب عليها الـ model:
-    - Resize(256) → CenterCrop(224) → Normalize
+    استخراج الـ features:
+    - Resize(224, 224) مباشرة بدون CenterCrop
     - MobileNetV2.features + AdaptiveAvgPool2d → flatten → 1280-D
     """
     img_tensor = PREPROCESS(image).unsqueeze(0)  # (1, 3, 224, 224)
@@ -198,7 +197,7 @@ async def health():
         "status":           "healthy",
         "svm_loaded":       svm_model is not None,
         "extractor_loaded": feature_extractor is not None,
-        "preprocessing":    "Resize(256) → CenterCrop(224) → Normalize",
+        "preprocessing":    "Resize(224, 224) → Normalize",
         "feature_dim":      "1280-D (MobileNetV2.features + AdaptiveAvgPool2d)",
         "endpoints": [
             "/recognize",
