@@ -12,11 +12,11 @@ import torchvision.transforms as transforms
 from torchvision import models
 import numpy as np
 import logging
-import os
+import asyncio
+import threading
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from rembg import remove, new_session
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +48,6 @@ CURRENCY_TEXT_AR = {
     "500 SR": "خمسمئة ريال سعودي",
 }
 
-# ✅ نفس الـ preprocessing اللي اتدرب عليه
 PREPROCESS = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -59,57 +58,65 @@ PREPROCESS = transforms.Compose([
 feature_extractor = None
 svm_model = None
 rembg_session = None
+models_ready = False
+
+
+def load_models_background():
+    """تحمّل كل الـ models في thread منفصل عشان ما يعطّل فتح الـ port"""
+    global feature_extractor, svm_model, rembg_session, models_ready
+
+    try:
+        logger.info("=" * 60)
+        logger.info("LOADING MODELS IN BACKGROUND...")
+        logger.info("=" * 60)
+
+        # 1. MobileNetV2
+        logger.info("Loading MobileNetV2...")
+        mobilenet = models.mobilenet_v2(weights="IMAGENET1K_V1")
+        feature_extractor = nn.Sequential(
+            mobilenet.features,
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        feature_extractor.eval()
+        logger.info("✅ MobileNetV2 loaded")
+
+        # 2. SVM
+        logger.info("Loading SVM model...")
+        with open(MODEL_PATH, 'rb') as f:
+            svm_model = joblib.load(f)
+        logger.info(f"✅ SVM loaded — classes: {svm_model.classes_}")
+
+        # 3. rembg
+        logger.info("Loading rembg session...")
+        from rembg import new_session
+        rembg_session = new_session("u2net")
+        logger.info("✅ rembg loaded")
+
+        models_ready = True
+        logger.info("=" * 60)
+        logger.info("✅ ALL MODELS READY!")
+        logger.info("=" * 60)
+
+    except Exception as e:
+        logger.error(f"❌ Error loading models: {e}")
 
 
 @app.on_event("startup")
-async def load_model():
-    global feature_extractor, svm_model, rembg_session
-
-    logger.info("=" * 60)
-    logger.info("INITIALIZING CURRENCY RECOGNITION SYSTEM")
-    logger.info("=" * 60)
-
-    # ✅ MobileNetV2 feature extractor
-    logger.info("Loading MobileNetV2 feature extractor...")
-    mobilenet = models.mobilenet_v2(weights="IMAGENET1K_V1")
-    feature_extractor = nn.Sequential(
-        mobilenet.features,
-        nn.AdaptiveAvgPool2d((1, 1))
-    )
-    feature_extractor.eval()
-    logger.info("✅ MobileNetV2 loaded — Output: 1280-D features")
-
-    # ✅ rembg session — يحمّل مرة وحدة عند الـ startup
-    logger.info("Loading rembg background removal model...")
-    rembg_session = new_session("u2net")
-    logger.info("✅ rembg loaded!")
-
-    # Load SVM
-    if not os.path.exists(MODEL_PATH):
-        logger.error(f"Model file not found at {MODEL_PATH}")
-        raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
-
-    logger.info(f"Loading SVM model: {MODEL_PATH}")
-    with open(MODEL_PATH, 'rb') as f:
-        svm_model = joblib.load(f)
-
-    logger.info(f"✅ SVM loaded — classes: {svm_model.classes_}")
-    logger.info("=" * 60)
-    logger.info("SYSTEM READY!")
-    logger.info("=" * 60)
+async def startup():
+    """يفتح الـ port فوراً ثم يحمّل الـ models في الخلفية"""
+    logger.info("🚀 Server starting — models loading in background...")
+    thread = threading.Thread(target=load_models_background, daemon=True)
+    thread.start()
 
 
 def remove_background(image: Image.Image) -> Image.Image:
-    """
-    شيل الخلفية وحط خلفية بيضاء
-    عشان اليد والخلفية ما تأثر على الـ model
-    """
     try:
+        from rembg import remove
         output = remove(image, session=rembg_session)
         background = Image.new("RGB", output.size, (255, 255, 255))
         output_rgba = output.convert("RGBA")
         background.paste(output_rgba, mask=output_rgba.split()[3])
-        logger.info("✅ Background removed successfully")
+        logger.info("✅ Background removed")
         return background
     except Exception as e:
         logger.warning(f"⚠️ Background removal failed: {e} — using original")
@@ -117,23 +124,15 @@ def remove_background(image: Image.Image) -> Image.Image:
 
 
 def extract_features(image: Image.Image) -> np.ndarray:
-    """
-    1. شيل الخلفية
-    2. Resize(256) → CenterCrop(224) → Normalize
-    3. MobileNetV2.features + AdaptiveAvgPool2d → 1280-D
-    """
     image = remove_background(image)
     img_tensor = PREPROCESS(image).unsqueeze(0)
-
     with torch.no_grad():
         features = feature_extractor(img_tensor)
-
     return features.view(features.size(0), -1).squeeze().numpy()
 
 
 def predict_currency(image: Image.Image):
     features = extract_features(image)
-
     prediction = svm_model.predict([features])[0]
     probabilities = svm_model.predict_proba([features])[0]
 
@@ -157,6 +156,12 @@ def predict_currency(image: Image.Image):
 # ──────────────────────────────────────────────
 @app.post("/recognize")
 async def recognize_currency(file: UploadFile = File(...)):
+    # لو الـ models لسه تتحمل
+    if not models_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Models still loading, please try again in a moment"
+        )
     try:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -177,6 +182,8 @@ async def recognize_currency(file: UploadFile = File(...)):
 # ──────────────────────────────────────────────
 @app.post("/recognize-with-image")
 async def recognize_with_image(file: UploadFile = File(...)):
+    if not models_ready:
+        raise HTTPException(status_code=503, detail="Models still loading")
     try:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -195,7 +202,7 @@ async def recognize_with_image(file: UploadFile = File(...)):
         buf.seek(0)
         return StreamingResponse(buf, media_type="image/png")
     except Exception as e:
-        logger.error(f"recognize-with-image error: {e}")
+        logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -206,11 +213,10 @@ async def recognize_with_image(file: UploadFile = File(...)):
 @app.get("/health")
 async def health():
     return {
-        "status":           "healthy",
-        "svm_loaded":       svm_model is not None,
-        "extractor_loaded": feature_extractor is not None,
-        "rembg_loaded":     rembg_session is not None,
-        "preprocessing":    "rembg → Resize(256) → CenterCrop(224) → Normalize",
-        "feature_dim":      "1280-D (MobileNetV2.features + AdaptiveAvgPool2d)",
-        "endpoints":        ["/recognize", "/recognize-with-image"]
+        "status":        "healthy" if models_ready else "loading",
+        "models_ready":  models_ready,
+        "svm_loaded":    svm_model is not None,
+        "rembg_loaded":  rembg_session is not None,
+        "preprocessing": "rembg → Resize(256) → CenterCrop(224) → Normalize",
+        "endpoints":     ["/recognize", "/recognize-with-image"]
     }
