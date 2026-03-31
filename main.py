@@ -1,3 +1,6 @@
+import os
+os.environ["U2NET_HOME"] = "/root/.u2net"
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image
