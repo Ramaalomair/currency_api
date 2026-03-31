@@ -1,6 +1,4 @@
 import os
-os.environ["U2NET_HOME"] = "/root/.u2net"
-
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image
@@ -12,8 +10,8 @@ import torchvision.transforms as transforms
 from torchvision import models
 import numpy as np
 import logging
-import asyncio
 import threading
+import cv2
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -57,20 +55,16 @@ PREPROCESS = transforms.Compose([
 
 feature_extractor = None
 svm_model = None
-rembg_session = None
 models_ready = False
 
 
 def load_models_background():
-    """تحمّل كل الـ models في thread منفصل عشان ما يعطّل فتح الـ port"""
-    global feature_extractor, svm_model, rembg_session, models_ready
-
+    global feature_extractor, svm_model, models_ready
     try:
         logger.info("=" * 60)
         logger.info("LOADING MODELS IN BACKGROUND...")
         logger.info("=" * 60)
 
-        # 1. MobileNetV2
         logger.info("Loading MobileNetV2...")
         mobilenet = models.mobilenet_v2(weights="IMAGENET1K_V1")
         feature_extractor = nn.Sequential(
@@ -80,17 +74,10 @@ def load_models_background():
         feature_extractor.eval()
         logger.info("✅ MobileNetV2 loaded")
 
-        # 2. SVM
         logger.info("Loading SVM model...")
         with open(MODEL_PATH, 'rb') as f:
             svm_model = joblib.load(f)
         logger.info(f"✅ SVM loaded — classes: {svm_model.classes_}")
-
-        # 3. rembg
-        logger.info("Loading rembg session...")
-        from rembg import new_session
-        rembg_session = new_session("u2net")
-        logger.info("✅ rembg loaded")
 
         models_ready = True
         logger.info("=" * 60)
@@ -103,28 +90,52 @@ def load_models_background():
 
 @app.on_event("startup")
 async def startup():
-    """يفتح الـ port فوراً ثم يحمّل الـ models في الخلفية"""
     logger.info("🚀 Server starting — models loading in background...")
     thread = threading.Thread(target=load_models_background, daemon=True)
     thread.start()
 
 
-def remove_background(image: Image.Image) -> Image.Image:
+def remove_background_grabcut(image: Image.Image) -> Image.Image:
+    """
+    شيل الخلفية باستخدام GrabCut من OpenCV
+    سريع (~0.5 ثانية) ولا يحتاج model خارجي
+    """
     try:
-        from rembg import remove
-        output = remove(image, session=rembg_session)
-        background = Image.new("RGB", output.size, (255, 255, 255))
-        output_rgba = output.convert("RGBA")
-        background.paste(output_rgba, mask=output_rgba.split()[3])
-        logger.info("✅ Background removed")
-        return background
+        # حوّل PIL إلى OpenCV
+        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        h, w = img_cv.shape[:2]
+
+        # الـ rect يغطي 80% من الصورة من الوسط
+        margin_x = int(w * 0.1)
+        margin_y = int(h * 0.1)
+        rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
+
+        # GrabCut
+        mask = np.zeros(img_cv.shape[:2], np.uint8)
+        bgd_model = np.zeros((1, 65), np.float64)
+        fgd_model = np.zeros((1, 65), np.float64)
+
+        cv2.grabCut(img_cv, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+
+        # الـ mask النهائية
+        mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+
+        # حط خلفية بيضاء
+        result = img_cv.copy()
+        result[mask2 == 0] = [255, 255, 255]
+
+        # حوّل رجع لـ PIL
+        result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+        logger.info("✅ Background removed with GrabCut")
+        return Image.fromarray(result_rgb)
+
     except Exception as e:
-        logger.warning(f"⚠️ Background removal failed: {e} — using original")
+        logger.warning(f"⚠️ GrabCut failed: {e} — using original")
         return image
 
 
 def extract_features(image: Image.Image) -> np.ndarray:
-    image = remove_background(image)
+    image = remove_background_grabcut(image)
     img_tensor = PREPROCESS(image).unsqueeze(0)
     with torch.no_grad():
         features = feature_extractor(img_tensor)
@@ -156,7 +167,6 @@ def predict_currency(image: Image.Image):
 # ──────────────────────────────────────────────
 @app.post("/recognize")
 async def recognize_currency(file: UploadFile = File(...)):
-    # لو الـ models لسه تتحمل
     if not models_ready:
         raise HTTPException(
             status_code=503,
@@ -216,7 +226,7 @@ async def health():
         "status":        "healthy" if models_ready else "loading",
         "models_ready":  models_ready,
         "svm_loaded":    svm_model is not None,
-        "rembg_loaded":  rembg_session is not None,
-        "preprocessing": "rembg → Resize(256) → CenterCrop(224) → Normalize",
+        "bg_removal":    "GrabCut (OpenCV) — no external model needed",
+        "preprocessing": "GrabCut → Resize(256) → CenterCrop(224) → Normalize",
         "endpoints":     ["/recognize", "/recognize-with-image"]
     }
