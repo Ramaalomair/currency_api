@@ -1,4 +1,3 @@
-import os
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image
@@ -11,7 +10,6 @@ from torchvision import models
 import numpy as np
 import logging
 import threading
-import cv2
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -95,47 +93,7 @@ async def startup():
     thread.start()
 
 
-def remove_background_grabcut(image: Image.Image) -> Image.Image:
-    """
-    شيل الخلفية باستخدام GrabCut من OpenCV
-    سريع (~0.5 ثانية) ولا يحتاج model خارجي
-    """
-    try:
-        # حوّل PIL إلى OpenCV
-        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        h, w = img_cv.shape[:2]
-
-        # الـ rect يغطي 80% من الصورة من الوسط
-        margin_x = int(w * 0.1)
-        margin_y = int(h * 0.1)
-        rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
-
-        # GrabCut
-        mask = np.zeros(img_cv.shape[:2], np.uint8)
-        bgd_model = np.zeros((1, 65), np.float64)
-        fgd_model = np.zeros((1, 65), np.float64)
-
-        cv2.grabCut(img_cv, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
-
-        # الـ mask النهائية
-        mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-
-        # حط خلفية بيضاء
-        result = img_cv.copy()
-        result[mask2 == 0] = [255, 255, 255]
-
-        # حوّل رجع لـ PIL
-        result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-        logger.info("✅ Background removed with GrabCut")
-        return Image.fromarray(result_rgb)
-
-    except Exception as e:
-        logger.warning(f"⚠️ GrabCut failed: {e} — using original")
-        return image
-
-
 def extract_features(image: Image.Image) -> np.ndarray:
-    image = remove_background_grabcut(image)
     img_tensor = PREPROCESS(image).unsqueeze(0)
     with torch.no_grad():
         features = feature_extractor(img_tensor)
@@ -223,10 +181,10 @@ async def recognize_with_image(file: UploadFile = File(...)):
 @app.get("/health")
 async def health():
     return {
-        "status":        "healthy" if models_ready else "loading",
-        "models_ready":  models_ready,
-        "svm_loaded":    svm_model is not None,
-        "bg_removal":    "GrabCut (OpenCV) — no external model needed",
-        "preprocessing": "GrabCut → Resize(256) → CenterCrop(224) → Normalize",
-        "endpoints":     ["/recognize", "/recognize-with-image"]
+        "status":       "healthy" if models_ready else "loading",
+        "models_ready": models_ready,
+        "svm_loaded":   svm_model is not None,
+        "preprocessing": "Resize(256) → CenterCrop(224) → Normalize",
+        "feature_dim":  "1280-D (MobileNetV2.features + AdaptiveAvgPool2d)",
+        "endpoints":    ["/recognize", "/recognize-with-image"]
     }
