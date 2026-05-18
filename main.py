@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Saudi Currency Recognition API")
 
-MODEL_PATH = "models/currency/FINAL_SVM_(RBF)-2.pkl"
+MODEL_PATH = "models/currency/FINAL_SVM_(RBF).pkl"
 
 CURRENCY_NAMES = {
     0: "10 SR",
